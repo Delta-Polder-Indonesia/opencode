@@ -1,15 +1,18 @@
 export * as JobTool from "./job"
 
+import { eq } from "drizzle-orm"
 import { Effect, Layer, Schema, Scope } from "effect"
 import { BackgroundJob } from "../background-job"
-import type { Database } from "../database/database"
+import { BackgroundJobStore } from "../background-job/store"
+import { Database } from "../database/database"
 import { makeLocationNode } from "../effect/app-node"
-import type { EventV2 } from "../event"
+import { EventV2 } from "../event"
 import { PositiveInt } from "../schema"
 import { SessionInput } from "../session/input"
 import { SessionMessage } from "../session/message"
 import { Prompt } from "../session/prompt"
-import type { SessionSchema } from "../session/schema"
+import { SessionSchema } from "../session/schema"
+import { SessionTable } from "../session/sql"
 import { Tool } from "./tool"
 import { ToolRegistry } from "./registry"
 import { Tools } from "./tools"
@@ -67,7 +70,7 @@ export interface LaunchInput {
 
 const completionNote = (info: BackgroundJob.Info) => {
   const outcome =
-    info.status === "error"
+    info.status === "error" || info.status === "interrupted"
       ? `error: ${info.error ?? "unknown"}`
       : (info.output?.match(/Command exited with code \d+\./)?.[0] ?? `status: ${info.status}`)
   const body = info.output
@@ -82,7 +85,7 @@ const completionNote = (info: BackgroundJob.Info) => {
 }
 
 /**
- * Admit one durable queue-delivery session input reporting job completion. Same
+ * Admit one durable queue-delivery session input reporting job settlement. Same
  * admission path as user prompts, so the note is recorded once and surfaces
  * through normal queued-input promotion on the session's next activity.
  * Cancelled jobs are never delivered: the cancelling actor already knows.
@@ -91,13 +94,13 @@ const completionNote = (info: BackgroundJob.Info) => {
 const deliver = Effect.fn("JobTool.deliver")(function* (
   db: Database.Interface["db"],
   events: EventV2.Interface,
-  input: LaunchInput,
+  sessionID: SessionSchema.ID,
   info: BackgroundJob.Info,
 ) {
   if (info.status === "cancelled" || info.status === "running") return
   yield* SessionInput.admit(db, events, {
     id: SessionMessage.ID.create(),
-    sessionID: input.sessionID,
+    sessionID,
     prompt: Prompt.fromUserMessage({ text: completionNote(info) }),
     delivery: "queue",
   })
@@ -105,10 +108,12 @@ const deliver = Effect.fn("JobTool.deliver")(function* (
 
 /**
  * Launch one tool-owned background job and fork its completion delivery watcher.
- * The watcher waits for settlement, then admits the durable completion note. It
- * lives in the long-lived location scope (not the settling fiber), tolerates
- * every inbox/database failure (jobs must stay observable even if delivery is
- * unavailable), and is bounded by the process-local registry's own lifetime.
+ * The watcher waits for settlement, persists the terminal status, then admits
+ * the durable completion note. Persistence is ordered before delivery so a
+ * crash in between recovers as `interrupted` (unknown outcome) rather than a
+ * silently lost settlement. The watcher lives in the long-lived location scope
+ * (not the settling fiber) and tolerates every durability/inbox/database
+ * failure — a job is never lost or hidden because persistence is unavailable.
  */
 export const launch = Effect.fn("JobTool.launch")(function* (input: LaunchInput) {
   const info = yield* input.jobs.start({
@@ -124,9 +129,23 @@ export const launch = Effect.fn("JobTool.launch")(function* (input: LaunchInput)
     } satisfies OwnerMetadata,
     run: input.run,
   })
+  yield* BackgroundJobStore.insert(input.db, info).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Failed to persist background job launch", cause).pipe(Effect.annotateLogs({ jobID: info.id })),
+    ),
+  )
   yield* input.jobs.wait({ id: info.id }).pipe(
     Effect.flatMap((result) =>
-      result.info === undefined ? Effect.void : deliver(input.db, input.events, input, result.info),
+      result.info === undefined
+        ? Effect.void
+        : BackgroundJobStore.settle(input.db, result.info).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Failed to persist background job settlement", cause).pipe(
+                Effect.annotateLogs({ jobID: info.id }),
+              ),
+            ),
+            Effect.andThen(deliver(input.db, input.events, input.sessionID, result.info)),
+          ),
     ),
     Effect.catch(() => Effect.void),
     Effect.catchDefect(() => Effect.void),
@@ -135,12 +154,44 @@ export const launch = Effect.fn("JobTool.launch")(function* (input: LaunchInput)
   return info
 })
 
+/**
+ * Restart recovery: claim every durable `running` row owned by a foreign
+ * runtime as `interrupted`, then deliver the usual completion note to each
+ * claimed job's owner session when that session still exists. Claiming and
+ * delivery are independent: a delivery failure never unclaims the row, and
+ * rows without owner metadata or with deleted sessions are still claimed.
+ * Runs at tool-layer boot, before any tool can execute.
+ */
+export const recover = Effect.fn("JobTool.recover")(function* (
+  db: Database.Interface["db"],
+  events: EventV2.Interface,
+) {
+  const claimed = yield* BackgroundJobStore.recover(db)
+  for (const info of claimed) {
+    const owner = info.metadata?.sessionID
+    if (typeof owner !== "string") continue
+    const sessionID = SessionSchema.ID.make(owner)
+    const session = yield* db
+      .select({ id: SessionTable.id })
+      .from(SessionTable)
+      .where(eq(SessionTable.id, sessionID))
+      .get()
+      .pipe(Effect.orDie)
+    if (!session) continue
+    yield* deliver(db, events, sessionID, info).pipe(
+      Effect.catch(() => Effect.void),
+      Effect.catchDefect(() => Effect.void),
+    )
+  }
+  return claimed.length
+})
+
 const unknownJob = (id: string) => new Tool.Failure({ message: `Unknown job: ${id}` })
 
 const InfoFields = {
   id: Schema.String,
   type: Schema.String,
-  status: Schema.Literals(["running", "completed", "error", "cancelled"]),
+  status: Schema.Literals(["running", "completed", "error", "cancelled", "interrupted"]),
   title: Schema.optional(Schema.String),
   started_at: Schema.Number,
   completed_at: Schema.optional(Schema.Number),
@@ -174,26 +225,37 @@ const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const tools = yield* Tools.Service
     const jobs = yield* BackgroundJob.Service
+    const database = yield* Database.Service
+    const events = yield* EventV2.Service
 
-    const requireOwned = Effect.fn("JobTool.requireOwned")(function* (id: string, context: Tool.Context) {
-      const info = yield* jobs.get(id)
-      if (!info || !owns(info, context.sessionID)) return yield* Effect.fail(unknownJob(id))
-      return info
+    yield* recover(database.db, events).pipe(
+      Effect.catchCause((cause) => Effect.logError("Background job restart recovery failed", cause)),
+    )
+
+    const resolve = Effect.fn("JobTool.resolve")(function* (id: string, context: Tool.Context) {
+      const live = yield* jobs.get(id)
+      if (live) {
+        if (!owns(live, context.sessionID)) return yield* Effect.fail(unknownJob(id))
+        return live
+      }
+      const stored = yield* BackgroundJobStore.get(database.db, id)
+      if (!stored || !owns(stored, context.sessionID)) return yield* Effect.fail(unknownJob(id))
+      return stored
     })
 
     yield* tools
       .register({
         [GET_NAME]: Tool.make({
-          description: `Read the latest status, output, and error of a background job owned by this session (for example one started by the bash tool with background: true). Jobs owned by other sessions are invisible and reported as unknown.`,
+          description: `Read the latest status, output, and error of a background job owned by this session (for example one started by the bash tool with background: true). Jobs owned by other sessions are invisible and reported as unknown. Jobs from a previous process lifetime are reported with status interrupted.`,
           input: Schema.Struct({
             id: Schema.String.annotate({ description: "Background job id returned when the job was launched" }),
           }),
           output: Schema.Struct(InfoFields),
           toModelOutput: ({ output }) => [{ type: "text", text: describeInfo(output) }],
-          execute: (input, context) => requireOwned(input.id, context).pipe(Effect.map(infoOutput)),
+          execute: (input, context) => resolve(input.id, context).pipe(Effect.map(infoOutput)),
         }),
         [WAIT_NAME]: Tool.make({
-          description: `Block until a background job owned by this session finishes, or until timeout milliseconds elapse (default: ${DEFAULT_WAIT_TIMEOUT_MS}; maximum: ${MAX_WAIT_TIMEOUT_MS}). Returns timedOut: true when the job is still running so polling is an explicit model choice. Use after launching with bash background: true to pull results inside the current turn instead of waiting for the automatic completion note.`,
+          description: `Block until a background job owned by this session finishes, or until timeout milliseconds elapse (default: ${DEFAULT_WAIT_TIMEOUT_MS}; maximum: ${MAX_WAIT_TIMEOUT_MS}). Returns timedOut: true when the job is still running so polling is an explicit model choice. Already-settled jobs return immediately. Use after launching with bash background: true to pull results inside the current turn instead of waiting for the automatic completion note.`,
           input: Schema.Struct({
             id: Schema.String.annotate({ description: "Background job id to wait for" }),
             timeout: PositiveInt.check(Schema.isLessThanOrEqualTo(MAX_WAIT_TIMEOUT_MS))
@@ -209,14 +271,15 @@ const layer = Layer.effectDiscard(
           ],
           execute: (input, context) =>
             Effect.gen(function* () {
-              yield* requireOwned(input.id, context)
+              const info = yield* resolve(input.id, context)
+              if (info.status !== "running") return { ...infoOutput(info), timedOut: false }
               const result = yield* jobs.wait({ id: input.id, timeout: input.timeout ?? DEFAULT_WAIT_TIMEOUT_MS })
               if (!result.info || !owns(result.info, context.sessionID)) return yield* Effect.fail(unknownJob(input.id))
               return { ...infoOutput(result.info), timedOut: result.timedOut }
             }),
         }),
         [CANCEL_NAME]: Tool.make({
-          description: `Cancel a running background job owned by this session. Cancellation is permanent, interrupts the job's work, and no completion note is delivered afterwards.`,
+          description: `Cancel a running background job owned by this session. Cancellation is permanent, interrupts the job's work, and no completion note is delivered afterwards. Cancelling an already-settled job is a no-op that returns its status.`,
           input: Schema.Struct({
             id: Schema.String.annotate({ description: "Background job id to cancel" }),
           }),
@@ -224,10 +287,11 @@ const layer = Layer.effectDiscard(
           toModelOutput: ({ output }) => [{ type: "text", text: describeInfo(output) }],
           execute: (input, context) =>
             Effect.gen(function* () {
-              yield* requireOwned(input.id, context)
-              const info = yield* jobs.cancel(input.id)
-              if (!info) return yield* Effect.fail(unknownJob(input.id))
-              return infoOutput(info)
+              const info = yield* resolve(input.id, context)
+              if (info.status !== "running") return infoOutput(info)
+              const cancelled = yield* jobs.cancel(input.id)
+              if (!cancelled) return yield* Effect.fail(unknownJob(input.id))
+              return infoOutput(cancelled)
             }),
         }),
       })
@@ -238,5 +302,5 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/job",
   layer,
-  deps: [ToolRegistry.node, BackgroundJob.node],
+  deps: [ToolRegistry.node, BackgroundJob.node, Database.node, EventV2.node],
 })

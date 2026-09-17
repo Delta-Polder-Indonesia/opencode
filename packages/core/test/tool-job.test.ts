@@ -3,6 +3,8 @@ import { eq } from "drizzle-orm"
 import { Deferred, Effect, Layer } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { BackgroundJob } from "@opencode-ai/core/background-job"
+import { BackgroundJobTable } from "@opencode-ai/core/background-job/sql"
+import { BackgroundJobStore } from "@opencode-ai/core/background-job/store"
 import { Config } from "@opencode-ai/core/config"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -46,11 +48,19 @@ const ownerMetadata = (owner: string = sessionID): JobTool.OwnerMetadata => ({
   directory: "/tmp",
 })
 
-/** Owner-bound tool tests run without a database: jobs live registry-side only. */
+/** Owner-bound tool tests start jobs registry-side only (no persisted rows). */
 const it = testEffect(
-  AppNodeBuilder.build(LayerNode.group([ToolRegistry.node, ToolRegistry.toolsNode, JobTool.node, BackgroundJob.node]), [
-    [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
-  ]),
+  AppNodeBuilder.build(
+    LayerNode.group([
+      Database.node,
+      EventV2.node,
+      ToolRegistry.node,
+      ToolRegistry.toolsNode,
+      JobTool.node,
+      BackgroundJob.node,
+    ]),
+    [[ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig]],
+  ),
 )
 
 describe("JobTools", () => {
@@ -157,6 +167,7 @@ const permission = Layer.succeed(
 )
 
 let processGate: Deferred.Deferred<void> | undefined
+let processOutput: Buffer = Buffer.from("mock-output\n")
 const appProcess = Layer.succeed(
   AppProcess.Service,
   AppProcess.Service.of({
@@ -166,8 +177,8 @@ const appProcess = Layer.succeed(
         const done: AppProcess.RunResult = {
           command: "mock",
           exitCode: 0,
-          output: Buffer.from("mock-output\n"),
-          stdout: Buffer.from("mock-output\n"),
+          output: processOutput,
+          stdout: processOutput,
           stderr: Buffer.alloc(0),
           outputTruncated: false,
           stdoutTruncated: false,
@@ -232,19 +243,21 @@ const setup = Effect.gen(function* () {
     .onConflictDoNothing()
     .run()
     .pipe(Effect.orDie)
-  yield* db
-    .insert(SessionTable)
-    .values({
-      id: sessionID,
-      project_id: Project.ID.global,
-      slug: "test",
-      directory: "/project",
-      title: "test",
-      version: "test",
-    })
-    .onConflictDoNothing()
-    .run()
-    .pipe(Effect.orDie)
+  for (const id of [sessionID, foreignSessionID]) {
+    yield* db
+      .insert(SessionTable)
+      .values({
+        id,
+        project_id: Project.ID.global,
+        slug: "test",
+        directory: "/project",
+        title: "test",
+        version: "test",
+      })
+      .onConflictDoNothing()
+      .run()
+      .pipe(Effect.orDie)
+  }
 })
 
 const deliveredNotes = Database.Service.use(({ db }) =>
@@ -277,6 +290,7 @@ describe("Background completion delivery", () => {
     Effect.gen(function* () {
       yield* setup
       processGate = undefined
+      processOutput = Buffer.from("mock-output\n")
       const registry = yield* ToolRegistry.Service
       const jobs = yield* BackgroundJob.Service
 
@@ -302,6 +316,7 @@ describe("Background completion delivery", () => {
   itDb.live("delivers nothing when a job is cancelled", () =>
     Effect.gen(function* () {
       yield* setup
+      processOutput = Buffer.from("mock-output\n")
       const registry = yield* ToolRegistry.Service
       const jobs = yield* BackgroundJob.Service
       processGate = yield* Deferred.make<void>()
@@ -322,6 +337,247 @@ describe("Background completion delivery", () => {
       yield* Effect.sleep(50)
       const notes = yield* deliveredNotes
       expect(notes.filter((row) => row.prompt.text.includes(job!))).toEqual([])
+    }),
+  )
+})
+
+/* ------------------------------------------------------------------------- */
+/* Durable status + restart recovery (gate 1).                               */
+
+const seedRow = (input: {
+  id: string
+  status: BackgroundJob.Status
+  runtimeID: string
+  sessionID?: string
+  metadata?: Record<string, unknown>
+  error?: string
+}) =>
+  Database.Service.use(({ db }) =>
+    db
+      .insert(BackgroundJobTable)
+      .values({
+        id: input.id,
+        type: "bash",
+        title: "seed",
+        session_id: (input.sessionID ?? null) as SessionV2.ID | null,
+        status: input.status,
+        runtime_id: input.runtimeID,
+        started_at: 1,
+        metadata: input.metadata ?? null,
+        error: input.error ?? null,
+      })
+      .run()
+      .pipe(Effect.orDie),
+  )
+
+const jobRow = (id: string) =>
+  Database.Service.use(({ db }) =>
+    db.select().from(BackgroundJobTable).where(eq(BackgroundJobTable.id, id)).get().pipe(Effect.orDie),
+  )
+
+const pollJobStatus = (
+  id: string,
+  status: string,
+  attempts = 500,
+): Effect.Effect<typeof BackgroundJobTable.$inferSelect | undefined, never, Database.Service> =>
+  jobRow(id).pipe(
+    Effect.flatMap((row) =>
+      row?.status === status
+        ? Effect.succeed(row)
+        : attempts <= 0
+          ? Effect.succeed(row)
+          : Effect.sleep(1).pipe(Effect.andThen(pollJobStatus(id, status, attempts - 1))),
+    ),
+  )
+
+const allNotes = Database.Service.use(({ db }) => db.select().from(SessionInputTable).all().pipe(Effect.orDie))
+
+describe("Durable job status", () => {
+  itDb.live("persists launch as running and settlement with a bounded output tail", () =>
+    Effect.gen(function* () {
+      yield* setup
+      processGate = yield* Deferred.make<void>()
+      processOutput = Buffer.from("x".repeat(BackgroundJobStore.MAX_PERSISTED_OUTPUT_BYTES + 4096))
+      const registry = yield* ToolRegistry.Service
+      const jobs = yield* BackgroundJob.Service
+
+      const settled = yield* settleTool(
+        registry,
+        call("bash", { command: "big-output", background: true }, "call-bg-durable"),
+      )
+      const job = (settled.output?.structured as { job?: string }).job!
+      expect(typeof job).toBe("string")
+
+      const running = yield* jobRow(job)
+      expect(running?.status).toBe("running")
+      expect(running?.session_id).toBe(sessionID)
+      expect(running?.runtime_id).toBe(BackgroundJobStore.runtimeID())
+      expect(running?.metadata).toMatchObject({ sessionID, command: "big-output" })
+
+      yield* Deferred.succeed(processGate, undefined)
+      processGate = undefined
+      const waited = yield* jobs.wait({ id: job })
+      expect(waited.info).toMatchObject({ status: "completed" })
+
+      const done = yield* pollJobStatus(job, "completed")
+      expect(done?.status).toBe("completed")
+      expect(done?.completed_at).not.toBeNull()
+      const full = `${processOutput.toString("utf8")}\n\nCommand exited with code 0.`
+      expect(done?.output).toBe(`…${full.slice(-BackgroundJobStore.MAX_PERSISTED_OUTPUT_BYTES)}`)
+      expect(done?.output?.length).toBe(BackgroundJobStore.MAX_PERSISTED_OUTPUT_BYTES + 1)
+      processOutput = Buffer.from("mock-output\n")
+    }),
+  )
+
+  itDb.live("persists cancellation as a terminal cancelled row", () =>
+    Effect.gen(function* () {
+      yield* setup
+      processGate = yield* Deferred.make<void>()
+      const registry = yield* ToolRegistry.Service
+      const jobs = yield* BackgroundJob.Service
+
+      const settled = yield* settleTool(
+        registry,
+        call("bash", { command: "cancel-me", background: true }, "call-bg-durable-cancel"),
+      )
+      const job = (settled.output?.structured as { job?: string }).job!
+      const cancelled = yield* jobs.cancel(job)
+      expect(cancelled).toMatchObject({ status: "cancelled" })
+      yield* Deferred.succeed(processGate, undefined)
+      processGate = undefined
+
+      const row = yield* pollJobStatus(job, "cancelled")
+      expect(row?.status).toBe("cancelled")
+      expect(row?.completed_at).not.toBeNull()
+      expect(row?.output ?? null).toBeNull()
+    }),
+  )
+})
+
+describe("Restart recovery", () => {
+  itDb.effect("claims foreign-runtime running rows as interrupted and notifies the owner session", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      const events = yield* EventV2.Service
+      const jobID = "job_recovery_claim"
+      yield* seedRow({
+        id: jobID,
+        status: "running",
+        runtimeID: "runtime_previous",
+        sessionID,
+        metadata: { ...ownerMetadata(), command: "lost-command" },
+      })
+
+      const claimed = yield* JobTool.recover(db, events)
+      expect(claimed).toBe(1)
+
+      const row = yield* jobRow(jobID)
+      expect(row?.status).toBe("interrupted")
+      expect(row?.error).toBe(BackgroundJobStore.INTERRUPTED_ERROR)
+      expect(row?.completed_at).not.toBeNull()
+
+      const notes = yield* deliveredNotes
+      const note = notes.find((n) => n.prompt.text.includes(jobID))
+      expect(note).toBeDefined()
+      expect(note?.delivery).toBe("queue")
+      expect(note?.promoted_seq).toBeNull()
+      expect(note?.prompt.text).toContain(`[background job ${jobID} interrupted]`)
+      expect(note?.prompt.text).toContain(BackgroundJobStore.INTERRUPTED_ERROR)
+    }),
+  )
+
+  itDb.effect("leaves current-runtime and settled rows untouched", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      const events = yield* EventV2.Service
+      yield* seedRow({
+        id: "job_recovery_live",
+        status: "running",
+        runtimeID: BackgroundJobStore.runtimeID(),
+        sessionID,
+        metadata: ownerMetadata(),
+      })
+      yield* seedRow({
+        id: "job_recovery_done",
+        status: "completed",
+        runtimeID: "runtime_previous",
+        sessionID,
+        metadata: ownerMetadata(),
+      })
+
+      const claimed = yield* JobTool.recover(db, events)
+      expect(claimed).toBe(0)
+      expect((yield* jobRow("job_recovery_live"))?.status).toBe("running")
+      expect((yield* jobRow("job_recovery_done"))?.status).toBe("completed")
+      expect(yield* deliveredNotes).toEqual([])
+    }),
+  )
+
+  itDb.effect("claims ownerless rows but skips note delivery for deleted sessions", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      const events = yield* EventV2.Service
+      yield* seedRow({
+        id: "job_recovery_orphan",
+        status: "running",
+        runtimeID: "runtime_previous",
+        metadata: { ...ownerMetadata(), sessionID: "ses_deleted_elsewhere" },
+      })
+
+      const claimed = yield* JobTool.recover(db, events)
+      expect(claimed).toBe(1)
+      expect((yield* jobRow("job_recovery_orphan"))?.status).toBe("interrupted")
+      const notes = yield* allNotes
+      expect(notes.filter((row) => row.prompt.text.includes("job_recovery_orphan"))).toEqual([])
+    }),
+  )
+
+  itDb.effect("job tools serve persisted rows after registry loss and keep owner hiding", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const registry = yield* ToolRegistry.Service
+      yield* seedRow({
+        id: "job_persisted_own",
+        status: "interrupted",
+        runtimeID: "runtime_previous",
+        sessionID,
+        metadata: ownerMetadata(),
+        error: BackgroundJobStore.INTERRUPTED_ERROR,
+      })
+      yield* seedRow({
+        id: "job_persisted_foreign",
+        status: "completed",
+        runtimeID: "runtime_previous",
+        sessionID: foreignSessionID,
+        metadata: ownerMetadata(foreignSessionID),
+      })
+
+      const got = yield* settleTool(registry, call("job_get", { id: "job_persisted_own" }, "call-get-persisted"))
+      expect(got.output?.structured).toMatchObject({
+        id: "job_persisted_own",
+        status: "interrupted",
+        error: BackgroundJobStore.INTERRUPTED_ERROR,
+      })
+
+      const waited = yield* settleTool(
+        registry,
+        call("job_wait", { id: "job_persisted_own", timeout: 1 }, "call-wait-persisted"),
+      )
+      expect(waited.output?.structured).toMatchObject({ status: "interrupted", timedOut: false })
+
+      const cancelled = yield* settleTool(
+        registry,
+        call("job_cancel", { id: "job_persisted_own" }, "call-cancel-persisted"),
+      )
+      expect(cancelled.output?.structured).toMatchObject({ status: "interrupted" })
+
+      expect(yield* executeTool(registry, call("job_get", { id: "job_persisted_foreign" }))).toEqual({
+        type: "error",
+        value: "Unknown job: job_persisted_foreign",
+      })
     }),
   )
 })

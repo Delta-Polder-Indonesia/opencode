@@ -58,9 +58,17 @@ Next reviewed slices:
 - ~~integrate the new BackgroundJob service with V2 tool execution~~ **done** (arena/01a0b0bc):
   model-facing bash `background: true` launch through the process-local registry, owner-bound
   `job_get`/`job_wait`/`job_cancel` tools, and durable queue-delivery completion notes into the
-  session inbox — see `specs/v2/background-jobs.md`. Remaining slices tracked there: durable
-  status/restart recovery + HTTP observation (gates 1/3), auto-resume on completion (awaits the
-  continuation-recovery slice below), and background agent dispatch (needs a V2 task tool port)
+  session inbox — see `specs/v2/background-jobs.md`
+- ~~persist background job status and define restart recovery~~ **done** (arena/01a0b171):
+  durable `background_job` table written around the process-local registry (best-effort: a
+  persistence failure never blocks or hides a live job), per-process `runtime_id` marker, and
+  boot-time recovery that atomically claims foreign-runtime `running` rows as `interrupted` and
+  delivers the usual inbox completion note to existing owner sessions; `job_*` tools fall back
+  to the durable row after registry loss and keep owner-bound hiding. Single-writer-per-database
+  assumption documented; fencing stays deferred. See `specs/v2/background-jobs.md`. Remaining
+  slices tracked there: HTTP observation (gate 3 — authorization question is now the open item),
+  auto-resume on completion (awaits the continuation-recovery slice below), stale-owner fencing,
+  and background agent dispatch (needs a V2 task tool port)
 - add durable/clustered interruption, retries, and stale-owner fencing only as
   their slices become concrete
 
@@ -135,7 +143,9 @@ failure appears during canary work:
 
 - serialize database migration claiming across processes; current migration
   application is protected only by an in-process semaphore, so two processes
-  starting against one SQLite database can still race
+  starting against one SQLite database can still race (same class:
+  background-job restart-recovery claims assume one live runtime per
+  database; `runtime_id` is a marker, not a fence)
 - simplify process-local durable-tail wake lifecycle with Effect `RcMap` and one
   shared `PubSub.sliding<void>(1)` per active aggregate; keep SQLite cursor replay
   and subscribe-before-history semantics unchanged
