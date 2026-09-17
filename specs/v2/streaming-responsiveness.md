@@ -89,10 +89,11 @@ dinonaktifkan via opsi `coalesce: false` bagi pemanggil langsung publisher
   `Bus` `message.part.delta`): sengaja tidak disentuh — jalur V2 adalah masa
   depan sesuai `todo.md`; koalesensi ganda di dua tempat menambah risiko.
 - **Migrasi index baru**: menunggu bukti `EXPLAIN QUERY PLAN`/profil.
-- Item todo berikutnya: replayable event cursor HTTP/SDK, BackgroundJob,
-  durable interruption/retry — terdaftar di `todo.md`, butuh desain masing-
-  masing; coalescing di fase 1 adalah prasyarat yang mengurangi beban client
-  untuk ketiganya.
+- Item todo berikutnya:
+  - **Replayable session event cursor (HTTP/SDK)** — status: selesai & terverifikasi,
+    lihat `specs/v2/session-event-cursor.md` (fase 2).
+  - BackgroundJob, durable interruption/retry — terdaftar di `todo.md`, butuh desain
+    masing-masing; coalescing di fase 1 adalah prasyarat yang mengurangi beban client.
 
 ## Verifikasi
 

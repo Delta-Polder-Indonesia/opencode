@@ -79,7 +79,9 @@ import { llmClient } from "../../effect/app-node-platform"
  *
  * - Post-run maintenance
  *   - [ ] Settle final status and expose durable output events to replayable consumers.
- *   - [ ] Coalesce streamed deltas and add covering projected-history indexes.
+ *   - [x] Coalesce streamed deltas and add covering projected-history indexes.
+ *     (Deltas coalesce via deltaBuffers + the scoped drain loop below; projected-history
+ *     indexes verified adequate — see specs/v2/streaming-responsiveness.md.)
  *   - [ ] Update title, summaries, compaction state, and cleanup in bounded background work.
  *
  * Use `llm.stream(request)` for each provider turn. Keep tool execution and continuation here.

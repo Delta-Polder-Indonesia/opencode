@@ -38,6 +38,14 @@ export type RequestSpec = {
   body?: unknown
 }
 
+/** Ad-hoc in-process API call usable while seeding or asserting a scenario. */
+export type ApiRequest = {
+  method: Method
+  path: string
+  headers?: Record<string, string>
+  body?: unknown
+}
+
 export type CallResult = {
   status: number
   contentType: string
@@ -54,6 +62,8 @@ export type BackendApp = {
 export type ScenarioContext = {
   directory: string | undefined
   headers: (extra?: Record<string, string>) => Record<string, string>
+  /** Issue an in-process API request through the same backend as the scenario, directory pre-scoped. */
+  api: (input: ApiRequest) => Effect.Effect<CallResult>
   file: (name: string, content: string) => Effect.Effect<void>
   session: (input?: { title?: string; parentID?: SessionID }) => Effect.Effect<SessionInfo>
   sessionGet: (sessionID: SessionID) => Effect.Effect<SessionInfo | undefined>

@@ -35,7 +35,7 @@ import { coverageResult, parseOptions, routeKey, routeKeys, selectedScenarios } 
 import { runScenario } from "./runner"
 import { disposeApps } from "./backend"
 import { runtime } from "./runtime"
-import { type Scenario } from "./types"
+import { type Scenario, type ScenarioContext } from "./types"
 
 function cursor(input: Record<string, unknown>) {
   return Buffer.from(JSON.stringify(input)).toString("base64url")
@@ -55,6 +55,41 @@ function locationData(validate: (value: any) => void) {
     object(body.location.project)
     validate(body.data)
   }
+}
+
+type CursorEventRef = { id: string; seq: number }
+
+/**
+ * Create one V2 Session with exactly two durable session.next events (agent switches) entirely
+ * through the public API, then resolve their aggregate cursor positions. Used to prove the
+ * replayable session event cursor contract (see specs/v2/session-event-cursor.md).
+ */
+function seedCursorSession(ctx: {
+  api: ScenarioContext["api"]
+}): Effect.Effect<{ sessionID: string; events: [CursorEventRef, CursorEventRef] }> {
+  return Effect.gen(function* () {
+    const created = yield* ctx.api({ method: "POST", path: "/api/session", body: {} })
+    if (created.status !== 200 || !isRecord(created.body) || !isRecord(created.body.data))
+      throw new Error(`cursor seed: create session failed: ${created.status}: ${created.text}`)
+    if (typeof created.body.data.id !== "string") throw new Error(`cursor seed: malformed session: ${created.text}`)
+    const sessionID = created.body.data.id
+    for (const agent of ["build", "plan"]) {
+      const switched = yield* ctx.api({ method: "POST", path: `/api/session/${sessionID}/agent`, body: { agent } })
+      if (switched.status !== 204)
+        throw new Error(`cursor seed: switch agent ${agent} failed: ${switched.status}: ${switched.text}`)
+    }
+    const page = yield* ctx.api({ method: "GET", path: `/api/session/${sessionID}/history?limit=10` })
+    if (page.status !== 200 || !isRecord(page.body) || !Array.isArray(page.body.data))
+      throw new Error(`cursor seed: history failed: ${page.status}: ${page.text}`)
+    const events = (page.body.data as unknown[]).map((event: unknown) => {
+      if (!isRecord(event) || typeof event.id !== "string" || !isRecord(event.durable))
+        throw new Error(`cursor seed: malformed history event: ${page.text}`)
+      if (typeof event.durable.seq !== "number") throw new Error(`cursor seed: missing event cursor: ${page.text}`)
+      return { id: event.id, seq: event.durable.seq }
+    })
+    if (events.length !== 2) throw new Error(`cursor seed: expected two seeded events, got ${events.length}`)
+    return { sessionID, events: [events[0]!, events[1]!] }
+  })
 }
 
 const scenarios: Scenario[] = [
@@ -1108,6 +1143,67 @@ const scenarios: Scenario[] = [
       headers: ctx.headers(),
     }))
     .status(404, undefined, "status"),
+  http.protected
+    .get("/api/session/{sessionID}/history", "v2.session.history.cursor")
+    .seeded(seedCursorSession)
+    .at((ctx) => ({
+      path: `${route("/api/session/{sessionID}/history", { sessionID: ctx.state.sessionID })}?${new URLSearchParams({
+        after: String(ctx.state.events[0].seq),
+        limit: "1",
+      })}`,
+      headers: ctx.headers(),
+    }))
+    .status(
+      200,
+      (ctx, result) =>
+        Effect.sync(() => {
+          object(result.body)
+          if (!isRecord(result.body)) throw new Error(`expected an object body, got ${result.text}`)
+          array(result.body.data)
+          check(
+            Array.isArray(result.body.data) && result.body.data.length === 1,
+            "cursor page should be a single event",
+          )
+          const event = (result.body.data as unknown[])[0]
+          check(isRecord(event), "cursor page event should be an object")
+          if (!isRecord(event)) return
+          check(event.type === "session.next.agent.switched", `unexpected cursor event type: ${String(event.type)}`)
+          check(isRecord(event.durable), "cursor event should carry its aggregate cursor")
+          check(
+            isRecord(event.durable) &&
+              typeof event.durable.seq === "number" &&
+              event.durable.seq > ctx.state.events[0].seq,
+            "cursor must advance strictly past the requested sequence",
+          )
+          check(event.id === ctx.state.events[1].id, "cursor page should resume with the first event after the cursor")
+          check(result.body.hasMore === false, "cursor page following the final event should not paginate further")
+        }),
+      "status",
+    ),
+  http.protected
+    .get("/api/session/{sessionID}/event", "v2.session.events.cursor")
+    .seeded(seedCursorSession)
+    .stream()
+    .at((ctx) => ({
+      path: `${route("/api/session/{sessionID}/event", { sessionID: ctx.state.sessionID })}?${new URLSearchParams({
+        after: String(ctx.state.events[0].seq),
+      })}`,
+      headers: ctx.headers(),
+    }))
+    .status(
+      200,
+      (ctx, result) =>
+        Effect.sync(() => {
+          check(result.contentType.includes("text/event-stream"), "session events should be an SSE stream")
+          check(
+            result.text.includes("session.next.agent.switched"),
+            "session events should replay durable events after the cursor",
+          )
+          check(result.text.includes(ctx.state.events[1].id), "session events should resume with the next sequence")
+          check(!result.text.includes(ctx.state.events[0].id), "session events must not replay the cursor itself")
+        }),
+      "status",
+    ),
   http.protected
     .post("/api/session/{sessionID}/interrupt", "v2.session.interrupt")
     .seeded((ctx) => ctx.session({ title: "Interrupt session" }))

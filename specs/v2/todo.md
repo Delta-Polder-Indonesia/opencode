@@ -45,8 +45,16 @@ Next reviewed slices:
   unbounded in the current local slice while SQLite publication stays serialized
 - remove the public in-memory `@opencode-ai/llm` tool loop after replacing its
   remaining one-turn native-adapter use with a narrow typed dispatcher
-- batch streamed deltas and add covering context indexes
-- expose replayable Session event cursors over HTTP and the generated SDK where remote consumers need them
+- ~~batch streamed deltas and add covering context indexes~~ **done** (arena/01a0b0bc):
+  live-only text/reasoning/tool-input deltas coalesce per fragment (50ms window, 16KB
+  threshold, boundary/settlement/failure flushes); projected-history context indexes
+  verified adequate (`event_aggregate_seq_idx`, `session_message_session_seq_idx`) — see
+  `specs/v2/streaming-responsiveness.md`
+- ~~expose replayable Session event cursors over HTTP and the generated SDK where remote consumers need them~~ **done** (arena/01a0b0bc):
+  endpoints, handlers, generated SDK already existed; this slice added cursor-semantics
+  route coverage (`v2.session.history.cursor`, `v2.session.events.cursor`) and the consumer
+  contract docs — see `specs/v2/session-event-cursor.md`. Remaining adoption slice:
+  wire app/desktop sync to resume from cursors (depends on New Data Mode)
 - integrate the new BackgroundJob service with V2 tool execution: support background
   bash jobs and background agent dispatch with durable status observation,
   completion delivery, and explicit cancellation / continuation semantics
@@ -110,8 +118,10 @@ replay-owner claims without relying on the old bus system.
 
 Remaining slices:
 
-- expose the embedded consumer-facing Session cursor API over HTTP and the
-  generated SDK where remote consumers need it
+- ~~expose the embedded consumer-facing Session cursor API over HTTP and the
+  generated SDK where remote consumers need it~~ **done** (arena/01a0b0bc): verified
+  end-to-end with new cursor-semantics route coverage; consumer contract documented in
+  `specs/v2/session-event-cursor.md`
 - keep replay-owner claims distinct from future clustered Session execution
   ownership and stale-runtime fencing
 
