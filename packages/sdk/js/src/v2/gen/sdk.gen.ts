@@ -295,6 +295,10 @@ import type {
   V2IntegrationGetResponses,
   V2IntegrationListErrors,
   V2IntegrationListResponses,
+  V2JobGetErrors,
+  V2JobGetResponses,
+  V2JobListErrors,
+  V2JobListResponses,
   V2LocationGetErrors,
   V2LocationGetResponses,
   V2ModelListErrors,
@@ -5083,6 +5087,59 @@ export class Agent extends HeyApiClient {
   }
 }
 
+export class Job extends HeyApiClient {
+  /**
+   * List background jobs
+   *
+   * List durable V2 background job rows, newest first. Observation is instance-wide and read-only; output is the persisted 16 KB tail. Jobs of deleted sessions are removed by cascade.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      sessionID?: string
+      status?: "running" | "completed" | "error" | "cancelled" | "interrupted"
+      limit?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "sessionID" },
+            { in: "query", key: "status" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<V2JobListResponses, V2JobListErrors, ThrowOnError>({
+      url: "/api/job",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get a background job
+   *
+   * Read one durable V2 background job row, or answer 404 when no row has that id.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      jobID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "jobID" }] }])
+    return (options?.client ?? this.client).get<V2JobGetResponses, V2JobGetErrors, ThrowOnError>({
+      url: "/api/job/{jobID}",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Revert extends HeyApiClient {
   /**
    * Stage session revert
@@ -7001,6 +7058,11 @@ export class V2 extends HeyApiClient {
   private _agent?: Agent
   get agent(): Agent {
     return (this._agent ??= new Agent({ client: this.client }))
+  }
+
+  private _job?: Job
+  get job(): Job {
+    return (this._job ??= new Job({ client: this.client }))
   }
 
   private _session?: Session3

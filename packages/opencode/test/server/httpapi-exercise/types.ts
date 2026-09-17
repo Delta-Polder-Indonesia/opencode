@@ -71,6 +71,8 @@ export type ScenarioContext = {
   message: (sessionID: SessionID, input?: { text?: string }) => Effect.Effect<MessageSeed>
   messages: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts[]>
   todos: (sessionID: SessionID, todos: TodoInfo[]) => Effect.Effect<void>
+  /** Insert durable V2 background job rows (the observation surface's truth). */
+  jobs: (input: JobSeed[]) => Effect.Effect<void>
   worktree: (input?: { name?: string }) => Effect.Effect<Worktree.Info>
   worktreeRemove: (directory: string) => Effect.Effect<void>
   llmText: (value: string) => Effect.Effect<void>
@@ -133,5 +135,17 @@ export type TodoInfo = {
   content: string
   status: "pending" | "in_progress" | "completed" | "cancelled"
   priority: "high" | "medium" | "low"
+}
+/** Durable V2 background job row seed (inserted straight into the store). */
+export type JobSeed = {
+  id: string
+  type?: string
+  status: "running" | "completed" | "error" | "cancelled" | "interrupted"
+  title?: string
+  sessionID?: SessionID
+  output?: string
+  error?: string
+  startedAt?: number
+  completedAt?: number
 }
 export type MessageSeed = { info: SessionV1.User; part: SessionV1.TextPart }

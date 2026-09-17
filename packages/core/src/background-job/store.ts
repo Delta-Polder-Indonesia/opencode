@@ -1,6 +1,6 @@
 export * as BackgroundJobStore from "./store"
 
-import { and, eq, ne } from "drizzle-orm"
+import { and, desc, eq, ne } from "drizzle-orm"
 import { Clock, Effect } from "effect"
 import type { Database } from "../database/database"
 import { Identifier } from "../id/id"
@@ -38,6 +38,7 @@ const fromRow = (row: typeof BackgroundJobTable.$inferSelect): BackgroundJob.Inf
   status: row.status,
   started_at: row.started_at,
   ...(row.title === null ? {} : { title: row.title }),
+  ...(row.session_id === null ? {} : { session_id: row.session_id }),
   ...(row.completed_at === null ? {} : { completed_at: row.completed_at }),
   ...(row.output === null ? {} : { output: row.output }),
   ...(row.error === null ? {} : { error: row.error }),
@@ -87,6 +88,36 @@ export const settle = Effect.fn("BackgroundJobStore.settle")(function* (db: Data
 export const get = Effect.fn("BackgroundJobStore.get")(function* (db: DatabaseService, id: string) {
   const row = yield* db.select().from(BackgroundJobTable).where(eq(BackgroundJobTable.id, id)).get().pipe(Effect.orDie)
   return row === undefined ? undefined : fromRow(row)
+})
+
+export type ListQuery = {
+  /** Owner session filter (the `(session_id, status)` index covers it). */
+  sessionID?: SessionSchema.ID
+  status?: BackgroundJob.Status
+  /** Maximum rows returned; the list is always newest-first. */
+  limit?: number
+}
+
+/**
+ * Durable observation feed (gate 3): every stored row, newest first
+ * (`started_at` desc, `id` desc tiebreak — ascending ids sort by creation).
+ * This is the restart-time truth, not the live registry: rows reflect
+ * persisted state only, within the best-effort durability contract.
+ */
+export const list = Effect.fn("BackgroundJobStore.list")(function* (db: DatabaseService, query: ListQuery = {}) {
+  const conditions = [
+    ...(query.sessionID === undefined ? [] : [eq(BackgroundJobTable.session_id, query.sessionID)]),
+    ...(query.status === undefined ? [] : [eq(BackgroundJobTable.status, query.status)]),
+  ]
+  const rows = yield* db
+    .select()
+    .from(BackgroundJobTable)
+    .where(conditions.length === 0 ? undefined : and(...conditions))
+    .orderBy(desc(BackgroundJobTable.started_at), desc(BackgroundJobTable.id))
+    .limit(query.limit ?? 50)
+    .all()
+    .pipe(Effect.orDie)
+  return rows.map(fromRow)
 })
 
 /**

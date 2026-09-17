@@ -351,6 +351,7 @@ const seedRow = (input: {
   sessionID?: string
   metadata?: Record<string, unknown>
   error?: string
+  startedAt?: number
 }) =>
   Database.Service.use(({ db }) =>
     db
@@ -362,7 +363,7 @@ const seedRow = (input: {
         session_id: (input.sessionID ?? null) as SessionV2.ID | null,
         status: input.status,
         runtime_id: input.runtimeID,
-        started_at: 1,
+        started_at: input.startedAt ?? 1,
         metadata: input.metadata ?? null,
         error: input.error ?? null,
       })
@@ -578,6 +579,66 @@ describe("Restart recovery", () => {
         type: "error",
         value: "Unknown job: job_persisted_foreign",
       })
+    }),
+  )
+})
+
+describe("Durable observation list", () => {
+  itDb.effect("lists rows newest-first with owner session, status, and limit filters", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      yield* seedRow({
+        id: "job_list_old",
+        status: "completed",
+        runtimeID: "runtime_a",
+        sessionID,
+        metadata: ownerMetadata(),
+        startedAt: 100,
+      })
+      yield* seedRow({
+        id: "job_list_mid",
+        status: "running",
+        runtimeID: BackgroundJobStore.runtimeID(),
+        sessionID,
+        metadata: ownerMetadata(),
+        startedAt: 200,
+      })
+      yield* seedRow({
+        id: "job_list_foreign",
+        status: "error",
+        runtimeID: "runtime_b",
+        sessionID: foreignSessionID,
+        metadata: ownerMetadata(foreignSessionID),
+        startedAt: 300,
+      })
+      yield* seedRow({
+        id: "job_list_ownerless",
+        status: "cancelled",
+        runtimeID: "runtime_b",
+        startedAt: 400,
+      })
+
+      const all = yield* BackgroundJobStore.list(db)
+      expect(all.map((info) => info.id)).toEqual([
+        "job_list_ownerless",
+        "job_list_foreign",
+        "job_list_mid",
+        "job_list_old",
+      ])
+
+      const owned = yield* BackgroundJobStore.list(db, { sessionID })
+      expect(owned.map((info) => info.id)).toEqual(["job_list_mid", "job_list_old"])
+      expect(owned[0]).toMatchObject({ session_id: sessionID, status: "running", type: "bash" })
+
+      const running = yield* BackgroundJobStore.list(db, { status: "running" })
+      expect(running.map((info) => info.id)).toEqual(["job_list_mid"])
+
+      const limited = yield* BackgroundJobStore.list(db, { limit: 2 })
+      expect(limited.map((info) => info.id)).toEqual(["job_list_ownerless", "job_list_foreign"])
+
+      const empty = yield* BackgroundJobStore.list(db, { sessionID: SessionV2.ID.make("ses_none") })
+      expect(empty).toEqual([])
     }),
   )
 })
