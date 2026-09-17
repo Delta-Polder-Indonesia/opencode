@@ -478,11 +478,18 @@ const verifyEphemeralDeltas = (kind: FragmentKind) =>
     const expectedContext = [{ type: "user", text: prompt }, fixture.expectedAssistant]
     yield* session.prompt({ sessionID, prompt: Prompt.make({ text: prompt }), resume: false })
     const events = yield* EventV2.Service
-    const live = yield* events.subscribe(fixture.delta).pipe(Stream.take(32), Stream.runCollect, Effect.forkScoped)
-    yield* Effect.yieldNow
+    // Live deltas may be coalesced into fewer events (see specs/v2/streaming-responsiveness.md);
+    // the contract is lossless concatenation per fragment, observability, and no durable writes.
+    const live: string[] = []
+    const unsubscribe = yield* events.listen((event) =>
+      Effect.sync(() => {
+        if (event.type === fixture.delta.type) live.push((event.data as { delta: string }).delta)
+      }),
+    )
     response = fixture.completeEvents
 
     yield* session.resume(sessionID)
+    yield* unsubscribe
 
     const { db } = yield* Database.Service
     const deltas = yield* db
@@ -491,7 +498,9 @@ const verifyEphemeralDeltas = (kind: FragmentKind) =>
       .where(eq(EventTable.type, EventV2.versionedType(fixture.delta.type, 1)))
       .all()
       .pipe(Effect.orDie)
-    expect(Array.from(yield* Fiber.join(live))).toHaveLength(32)
+    expect(live.length).toBeGreaterThanOrEqual(1)
+    expect(live.length).toBeLessThanOrEqual(chunks.length)
+    expect(live.join("")).toBe(chunks.join(""))
     expect(deltas).toHaveLength(0)
     expect(yield* session.context(sessionID)).toMatchObject(expectedContext)
 

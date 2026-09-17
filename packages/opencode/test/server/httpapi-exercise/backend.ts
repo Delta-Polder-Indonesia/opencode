@@ -17,6 +17,22 @@ export function call(scenario: ActiveScenario, ctx: SeededContext<unknown>, opti
   )
 }
 
+/** Issue one ad-hoc request against the shared in-process app (e.g. to seed state over the public API). */
+export function callApi(input: { method: string; path: string; headers?: Record<string, string>; body?: unknown }) {
+  return Effect.promise(async () =>
+    capture(
+      await app(await runtime(), {}).request(
+        new Request(new URL(input.path, "http://localhost"), {
+          method: input.method,
+          headers: input.body === undefined ? input.headers : { "content-type": "application/json", ...input.headers },
+          body: input.body === undefined ? undefined : JSON.stringify(input.body),
+        }),
+      ),
+      "full",
+    ),
+  )
+}
+
 export function callAuthProbe(scenario: ActiveScenario, credentials: "missing" | "valid" = "missing") {
   return Effect.promise(async () => {
     const controller = new AbortController()

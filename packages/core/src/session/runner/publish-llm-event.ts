@@ -1,5 +1,5 @@
 import { ToolOutput, type LLMEvent, type ProviderMetadata, type ToolResultValue, type Usage } from "@opencode-ai/llm"
-import { DateTime, Effect } from "effect"
+import { DateTime, Duration, Effect } from "effect"
 import { EventV2 } from "../../event"
 import { ModelV2 } from "../../model"
 import { SessionEvent } from "../event"
@@ -11,6 +11,29 @@ type Input = {
   readonly agent: string
   readonly model: ModelV2.Ref
   readonly snapshot?: string
+}
+
+/** Tuning for live-only streamed delta coalescing. See specs/v2/streaming-responsiveness.md. */
+export interface StreamDeltaCoalesce {
+  /** Runner drains buffered deltas at this interval while a provider turn streams. */
+  readonly window: Duration.Input
+  /** Publish a fragment's buffered deltas once they reach this many characters. */
+  readonly maxChars: number
+}
+
+export const STREAM_DELTA_COALESCE: StreamDeltaCoalesce = {
+  window: Duration.millis(50),
+  maxChars: 16 * 1024,
+}
+
+export interface PublisherOptions {
+  /**
+   * Merge consecutive live-only deltas per fragment into fewer events. Concatenation and
+   * ordering are lossless, and buffered deltas always flush before their fragment `Ended`
+   * boundary, step settlement, assistant failure, and `flush()` — so no consumer can observe
+   * a delta after the message it belongs to. Pass `false` to keep the legacy 1:1 emission.
+   */
+  readonly coalesce?: false | StreamDeltaCoalesce
 }
 
 const safe = (value: number | undefined) => Math.max(0, Number.isFinite(value) ? (value ?? 0) : 0)
@@ -51,7 +74,8 @@ const settledOutput = (value: ToolOutput | undefined, result: ToolResultValue): 
 }
 
 /** Persist one provider turn without executing tools or starting a continuation turn. */
-export const createLLMEventPublisher = (events: EventV2.Interface, input: Input) => {
+export const createLLMEventPublisher = (events: EventV2.Interface, input: Input, options?: PublisherOptions) => {
+  const coalesce = options?.coalesce === false ? undefined : (options?.coalesce ?? STREAM_DELTA_COALESCE)
   const tools = new Map<
     string,
     {
@@ -156,6 +180,42 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
     }),
   )
 
+  type BufferedDelta = {
+    readonly publish: (delta: string) => Effect.Effect<void>
+    chars: number
+    parts: string[]
+  }
+  const deltaBuffers = new Map<string, BufferedDelta>()
+
+  const flushDeltaBuffer = Effect.fnUntraced(function* (key: string) {
+    const buffer = deltaBuffers.get(key)
+    if (!buffer) return
+    deltaBuffers.delete(key)
+    const delta = buffer.parts.join("")
+    buffer.chars = 0
+    buffer.parts = []
+    if (delta.length > 0) yield* buffer.publish(delta)
+  })
+
+  const flushDeltaBuffers = Effect.fn("SessionRunner.flushDeltaBuffers")(function* () {
+    for (const key of Array.from(deltaBuffers.keys())) yield* flushDeltaBuffer(key)
+  })()
+
+  const bufferDelta = Effect.fnUntraced(function* (
+    key: string,
+    delta: string,
+    publish: (delta: string) => Effect.Effect<void>,
+  ) {
+    let buffer = deltaBuffers.get(key)
+    if (!buffer) {
+      buffer = { publish, chars: 0, parts: [] }
+      deltaBuffers.set(key, buffer)
+    }
+    buffer.parts.push(delta)
+    buffer.chars += delta.length
+    if (coalesce && buffer.chars >= coalesce.maxChars) yield* flushDeltaBuffer(key)
+  })
+
   const flushFragments = Effect.fnUntraced(function* () {
     yield* text.flush()
     yield* reasoning.flush()
@@ -189,10 +249,13 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
     if (tool.name !== event.name)
       return yield* Effect.die(`Tool input name changed for ${event.id}: ${tool.name} -> ${event.name}`)
     if (tool.inputEnded) return yield* Effect.die(`Duplicate tool input end: ${event.id}`)
+    yield* flushDeltaBuffer(`toolInput:${event.id}`)
     yield* toolInput.end(event.id)
   })
 
   const flush = Effect.fn("SessionRunner.flush")(function* () {
+    // Coalesced deltas must land before any fragment end published below.
+    yield* flushDeltaBuffers
     yield* flushFragments()
   })
 
@@ -252,17 +315,34 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
           textID: event.id,
         })
         return
-      case "text-delta":
+      case "text-delta": {
         yield* text.append(event.id, event.text)
-        yield* events.publish(SessionEvent.Text.Delta, {
-          sessionID: input.sessionID,
-          assistantMessageID: yield* currentAssistantMessageID(),
-          timestamp: yield* timestamp,
-          textID: event.id,
-          delta: event.text,
-        })
+        const assistantMessageID = yield* currentAssistantMessageID()
+        if (!coalesce) {
+          yield* events.publish(SessionEvent.Text.Delta, {
+            sessionID: input.sessionID,
+            assistantMessageID,
+            timestamp: yield* timestamp,
+            textID: event.id,
+            delta: event.text,
+          })
+          return
+        }
+        yield* bufferDelta(`text:${event.id}`, event.text, (delta) =>
+          Effect.gen(function* () {
+            yield* events.publish(SessionEvent.Text.Delta, {
+              sessionID: input.sessionID,
+              assistantMessageID,
+              timestamp: yield* timestamp,
+              textID: event.id,
+              delta,
+            })
+          }),
+        )
         return
+      }
       case "text-end":
+        yield* flushDeltaBuffer(`text:${event.id}`)
         yield* text.end(event.id)
         return
       case "reasoning-start":
@@ -275,17 +355,34 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
           providerMetadata: event.providerMetadata,
         })
         return
-      case "reasoning-delta":
+      case "reasoning-delta": {
         yield* reasoning.append(event.id, event.text)
-        yield* events.publish(SessionEvent.Reasoning.Delta, {
-          sessionID: input.sessionID,
-          assistantMessageID: yield* currentAssistantMessageID(),
-          timestamp: yield* timestamp,
-          reasoningID: event.id,
-          delta: event.text,
-        })
+        const assistantMessageID = yield* currentAssistantMessageID()
+        if (!coalesce) {
+          yield* events.publish(SessionEvent.Reasoning.Delta, {
+            sessionID: input.sessionID,
+            assistantMessageID,
+            timestamp: yield* timestamp,
+            reasoningID: event.id,
+            delta: event.text,
+          })
+          return
+        }
+        yield* bufferDelta(`reasoning:${event.id}`, event.text, (delta) =>
+          Effect.gen(function* () {
+            yield* events.publish(SessionEvent.Reasoning.Delta, {
+              sessionID: input.sessionID,
+              assistantMessageID,
+              timestamp: yield* timestamp,
+              reasoningID: event.id,
+              delta,
+            })
+          }),
+        )
         return
+      }
       case "reasoning-end":
+        yield* flushDeltaBuffer(`reasoning:${event.id}`)
         yield* reasoning.end(event.id, event.providerMetadata)
         return
       case "tool-input-start":
@@ -298,6 +395,20 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
           return yield* Effect.die(`Tool input name changed for ${event.id}: ${tool.name} -> ${event.name}`)
         if (tool.inputEnded) return yield* Effect.die(`Tool input delta after end: ${event.id}`)
         yield* toolInput.append(event.id, event.text)
+        if (coalesce) {
+          yield* bufferDelta(`toolInput:${event.id}`, event.text, (delta) =>
+            Effect.gen(function* () {
+              yield* events.publish(SessionEvent.Tool.Input.Delta, {
+                sessionID: input.sessionID,
+                timestamp: yield* timestamp,
+                assistantMessageID: tool.assistantMessageID,
+                callID: event.id,
+                delta,
+              })
+            }),
+          )
+          return
+        }
         yield* events.publish(SessionEvent.Tool.Input.Delta, {
           sessionID: input.sessionID,
           timestamp: yield* timestamp,
@@ -411,6 +522,7 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
   return {
     publish,
     flush,
+    flushDeltas: flushDeltaBuffers,
     failAssistant,
     failUnsettledTools,
     hasActiveAssistant: () => assistantActive,

@@ -7,7 +7,7 @@ import type { Config } from "../../../src/config/config"
 
 import type { MessageV2 } from "../../../src/session/message-v2"
 import { MessageID, PartID } from "../../../src/session/schema"
-import { call, callAuthProbe, disposeApps } from "./backend"
+import { call, callApi, callAuthProbe, disposeApps } from "./backend"
 import { original } from "./environment"
 import { runtime } from "./runtime"
 import type { ActiveScenario, Options, ProjectOptions, Result, Scenario, ScenarioContext, SeededContext } from "./types"
@@ -129,6 +129,11 @@ function withContext<A, E>(
             ...(context.dir?.path ? { "x-opencode-directory": context.dir.path } : {}),
             ...extra,
           }),
+          api: (input) =>
+            callApi({
+              ...input,
+              headers: { ...(context.dir?.path ? { "x-opencode-directory": context.dir.path } : {}), ...input.headers },
+            }),
           file: (name, content) =>
             Effect.promise(() => {
               return Bun.write(`${directory()}/${name}`, content)

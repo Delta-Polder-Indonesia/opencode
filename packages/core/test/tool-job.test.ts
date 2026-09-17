@@ -1,0 +1,327 @@
+import { describe, expect } from "bun:test"
+import { eq } from "drizzle-orm"
+import { Deferred, Effect, Layer } from "effect"
+import { ChildProcess } from "effect/unstable/process"
+import { BackgroundJob } from "@opencode-ai/core/background-job"
+import { Config } from "@opencode-ai/core/config"
+import { Database } from "@opencode-ai/core/database/database"
+import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { EventV2 } from "@opencode-ai/core/event"
+import { Location } from "@opencode-ai/core/location"
+import { LocationMutation } from "@opencode-ai/core/location-mutation"
+import { PermissionV2 } from "@opencode-ai/core/permission"
+import { AppProcess } from "@opencode-ai/core/process"
+import { Project } from "@opencode-ai/core/project"
+import { ProjectTable } from "@opencode-ai/core/project/sql"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { SessionInputTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionStore } from "@opencode-ai/core/session/store"
+import { BashTool } from "@opencode-ai/core/tool/bash"
+import { JobTool } from "@opencode-ai/core/tool/job"
+import { ToolRegistry } from "@opencode-ai/core/tool/registry"
+import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
+import { location } from "./fixture/location"
+import { tmpdir } from "./fixture/tmpdir"
+import { testEffect } from "./lib/effect"
+import { toolIdentity, settleTool, executeTool, toolDefinitions } from "./lib/tool"
+
+const sessionID = SessionV2.ID.make("ses_job_tool_test")
+const foreignSessionID = SessionV2.ID.make("ses_job_tool_foreign")
+
+const call = (name: string, input: unknown, id = `call-${name}`): ToolRegistry.ExecuteInput => ({
+  sessionID,
+  ...toolIdentity,
+  call: { type: "tool-call", id, name, input },
+})
+
+const ownerMetadata = (owner: string = sessionID): JobTool.OwnerMetadata => ({
+  sessionID: owner,
+  agent: toolIdentity.agent,
+  assistantMessageID: toolIdentity.assistantMessageID,
+  toolCallID: "call-seed",
+  command: "seed",
+  directory: "/tmp",
+})
+
+/** Owner-bound tool tests run without a database: jobs live registry-side only. */
+const it = testEffect(
+  AppNodeBuilder.build(LayerNode.group([ToolRegistry.node, ToolRegistry.toolsNode, JobTool.node, BackgroundJob.node]), [
+    [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
+  ]),
+)
+
+describe("JobTools", () => {
+  it.effect("advertises exactly the owner-bound job tools", () =>
+    Effect.gen(function* () {
+      const definitions = yield* toolDefinitions(yield* ToolRegistry.Service)
+      expect(definitions.map((tool) => tool.name)).toEqual(["job_get", "job_wait", "job_cancel"])
+    }),
+  )
+
+  it.effect("job_get reports owned jobs and hides foreign jobs as unknown", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const registry = yield* ToolRegistry.Service
+
+      const own = yield* jobs.start({
+        type: "bash",
+        metadata: ownerMetadata(),
+        run: Deferred.make<string>().pipe(Effect.flatMap(Deferred.await)),
+      })
+      const foreign = yield* jobs.start({
+        type: "bash",
+        metadata: ownerMetadata(foreignSessionID),
+        run: Deferred.make<string>().pipe(Effect.flatMap(Deferred.await)),
+      })
+
+      const owned = yield* settleTool(registry, call("job_get", { id: own.id }))
+      expect(owned.output?.structured).toMatchObject({ id: own.id, type: "bash", status: "running" })
+
+      expect(yield* executeTool(registry, call("job_get", { id: foreign.id }))).toEqual({
+        type: "error",
+        value: `Unknown job: ${foreign.id}`,
+      })
+    }),
+  )
+
+  it.live("job_wait times out explicitly and resolves with output after completion", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const registry = yield* ToolRegistry.Service
+      const gate = yield* Deferred.make<void>()
+      const job = yield* jobs.start({
+        type: "bash",
+        metadata: ownerMetadata(),
+        run: Deferred.await(gate).pipe(Effect.as("done-output")),
+      })
+
+      const timedOut = yield* settleTool(registry, call("job_wait", { id: job.id, timeout: 10 }))
+      expect(timedOut.output?.structured).toMatchObject({ status: "running", timedOut: true })
+
+      yield* Deferred.succeed(gate, undefined)
+      const settled = yield* settleTool(registry, call("job_wait", { id: job.id, timeout: 5_000 }))
+      expect(settled.output?.structured).toMatchObject({
+        status: "completed",
+        timedOut: false,
+        output: "done-output",
+      })
+    }),
+  )
+
+  it.effect("job_cancel interrupts owned jobs and refuses foreign jobs", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const registry = yield* ToolRegistry.Service
+      const gate = yield* Deferred.make<void>()
+      const own = yield* jobs.start({
+        type: "bash",
+        metadata: ownerMetadata(),
+        run: Deferred.await(gate).pipe(Effect.as("never")),
+      })
+      const foreign = yield* jobs.start({
+        type: "bash",
+        metadata: ownerMetadata(foreignSessionID),
+        run: Deferred.make<string>().pipe(Effect.flatMap(Deferred.await)),
+      })
+
+      const cancelled = yield* settleTool(registry, call("job_cancel", { id: own.id }))
+      expect(cancelled.output?.structured).toMatchObject({ id: own.id, status: "cancelled" })
+      expect(yield* jobs.get(own.id)).toMatchObject({ status: "cancelled" })
+
+      expect(yield* executeTool(registry, call("job_cancel", { id: foreign.id }))).toEqual({
+        type: "error",
+        value: `Unknown job: ${foreign.id}`,
+      })
+      expect(yield* jobs.get(foreign.id)).toMatchObject({ status: "running" })
+    }),
+  )
+})
+
+/* ------------------------------------------------------------------------- */
+/* Completion delivery: real database + event stack, mocked process boundary. */
+
+const assertions: PermissionV2.AssertInput[] = []
+const permission = Layer.succeed(
+  PermissionV2.Service,
+  PermissionV2.Service.of({
+    assert: (input) => Effect.sync(() => assertions.push(input)),
+    ask: () => Effect.die("unused"),
+    reply: () => Effect.die("unused"),
+    get: () => Effect.die("unused"),
+    forSession: () => Effect.die("unused"),
+    list: () => Effect.die("unused"),
+  }),
+)
+
+let processGate: Deferred.Deferred<void> | undefined
+const appProcess = Layer.succeed(
+  AppProcess.Service,
+  AppProcess.Service.of({
+    run: (command: ChildProcess.Command, _options?: AppProcess.RunOptions) =>
+      Effect.suspend(() => {
+        if (command._tag !== "StandardCommand") throw new Error("expected standard command")
+        const done: AppProcess.RunResult = {
+          command: "mock",
+          exitCode: 0,
+          output: Buffer.from("mock-output\n"),
+          stdout: Buffer.from("mock-output\n"),
+          stderr: Buffer.alloc(0),
+          outputTruncated: false,
+          stdoutTruncated: false,
+          stderrTruncated: false,
+        }
+        return processGate ? Effect.as(Deferred.await(processGate), done) : Effect.succeed(done)
+      }),
+  } as unknown as AppProcess.Interface),
+)
+
+const config = Layer.succeed(
+  Config.Service,
+  Config.Service.of({
+    entries: () => Effect.succeed([]),
+  }),
+)
+
+const itDb = testEffect(
+  AppNodeBuilder.build(
+    LayerNode.group([
+      Database.node,
+      EventV2.node,
+      SessionProjector.node,
+      SessionStore.node,
+      ToolRegistry.node,
+      ToolRegistry.toolsNode,
+      LocationMutation.node,
+      BashTool.node,
+      JobTool.node,
+      BackgroundJob.node,
+    ]),
+    [
+      [
+        Location.node,
+        Layer.unwrap(
+          Effect.acquireRelease(
+            Effect.promise(() => tmpdir()),
+            (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+          ).pipe(
+            Effect.map((tmp) =>
+              Layer.succeed(
+                Location.Service,
+                Location.Service.of(location({ directory: AbsolutePath.make(tmp.path) })),
+              ),
+            ),
+          ),
+        ),
+      ],
+      [PermissionV2.node, permission],
+      [AppProcess.node, appProcess],
+      [Config.node, config],
+      [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
+    ],
+  ),
+)
+
+const setup = Effect.gen(function* () {
+  const { db } = yield* Database.Service
+  yield* db
+    .insert(ProjectTable)
+    .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+    .onConflictDoNothing()
+    .run()
+    .pipe(Effect.orDie)
+  yield* db
+    .insert(SessionTable)
+    .values({
+      id: sessionID,
+      project_id: Project.ID.global,
+      slug: "test",
+      directory: "/project",
+      title: "test",
+      version: "test",
+    })
+    .onConflictDoNothing()
+    .run()
+    .pipe(Effect.orDie)
+})
+
+const deliveredNotes = Database.Service.use(({ db }) =>
+  db
+    .select()
+    .from(SessionInputTable)
+    .where(eq(SessionInputTable.session_id, sessionID))
+    .all()
+    .pipe(
+      Effect.orDie,
+      Effect.map((rows) => rows.filter((row) => row.prompt.text.includes("[background job"))),
+    ),
+)
+
+type NoteRow = typeof SessionInputTable.$inferSelect
+
+const pollNotes = (count: number, attempts = 500): Effect.Effect<NoteRow[], never, Database.Service> =>
+  deliveredNotes.pipe(
+    Effect.flatMap((rows) =>
+      rows.length >= count
+        ? Effect.succeed(rows)
+        : attempts <= 0
+          ? Effect.succeed(rows)
+          : Effect.sleep(1).pipe(Effect.andThen(pollNotes(count, attempts - 1))),
+    ),
+  )
+
+describe("Background completion delivery", () => {
+  itDb.live("delivers a durable queued session input when a background job completes", () =>
+    Effect.gen(function* () {
+      yield* setup
+      processGate = undefined
+      const registry = yield* ToolRegistry.Service
+      const jobs = yield* BackgroundJob.Service
+
+      const settled = yield* settleTool(registry, call("bash", { command: "printf hi", background: true }, "call-bg"))
+      const job = (settled.output?.structured as { job?: string }).job
+      expect(typeof job).toBe("string")
+
+      const waited = yield* jobs.wait({ id: job! })
+      expect(waited.info).toMatchObject({ status: "completed" })
+
+      const notes = yield* pollNotes(1)
+      const note = notes.find((row) => row.prompt.text.includes(job!))
+      expect(note).toBeDefined()
+      expect(note?.delivery).toBe("queue")
+      expect(note?.promoted_seq).toBeNull()
+      expect(note?.prompt.text).toContain(`[background job ${job} completed]`)
+      expect(note?.prompt.text).toContain("Command exited with code 0.")
+      expect(note?.prompt.text).toContain("mock-output")
+      expect(note?.prompt.text).toContain(`job_get({ id: "${job}" })`)
+    }),
+  )
+
+  itDb.live("delivers nothing when a job is cancelled", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const registry = yield* ToolRegistry.Service
+      const jobs = yield* BackgroundJob.Service
+      processGate = yield* Deferred.make<void>()
+
+      const settled = yield* settleTool(
+        registry,
+        call("bash", { command: "sleep 30", background: true }, "call-bg-cancel"),
+      )
+      const job = (settled.output?.structured as { job?: string }).job
+      expect(typeof job).toBe("string")
+
+      const cancelled = yield* jobs.cancel(job!)
+      expect(cancelled).toMatchObject({ status: "cancelled" })
+      yield* Deferred.succeed(processGate, undefined)
+      processGate = undefined
+
+      // Give a (broken) delivery path ample opportunity to fire, then assert absence.
+      yield* Effect.sleep(50)
+      const notes = yield* deliveredNotes
+      expect(notes.filter((row) => row.prompt.text.includes(job!))).toEqual([])
+    }),
+  )
+})

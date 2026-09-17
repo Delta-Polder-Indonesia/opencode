@@ -2,12 +2,15 @@ import fs from "fs/promises"
 import { realpathSync } from "node:fs"
 import path from "path"
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Deferred, Effect, Layer } from "effect"
 import { ChildProcess } from "effect/unstable/process"
+import { BackgroundJob } from "@opencode-ai/core/background-job"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Config } from "@opencode-ai/core/config"
+import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { EventV2 } from "@opencode-ai/core/event"
 import { Location } from "@opencode-ai/core/location"
 import { LocationMutation } from "@opencode-ai/core/location-mutation"
 import { PermissionV2 } from "@opencode-ai/core/permission"
@@ -15,6 +18,7 @@ import { AppProcess } from "@opencode-ai/core/process"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { BashTool } from "@opencode-ai/core/tool/bash"
+import { JobTool } from "@opencode-ai/core/tool/job"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
 import { location } from "./fixture/location"
@@ -42,6 +46,7 @@ let result: AppProcess.RunResult = {
   stderrTruncated: false,
 }
 let runFailure: AppProcess.AppProcessError | undefined
+let gate: Deferred.Deferred<void> | undefined
 let afterPermission = (_input: PermissionV2.AssertInput): Effect.Effect<void> => Effect.void
 
 const permission = Layer.succeed(
@@ -68,7 +73,8 @@ const appProcess = Layer.succeed(
       Effect.suspend(() => {
         if (command._tag !== "StandardCommand") throw new Error("expected standard command")
         runs.push({ command: command.command, cwd: command.options.cwd, shell: command.options.shell, options })
-        return runFailure ? Effect.fail(runFailure) : Effect.succeed(result)
+        if (runFailure) return Effect.fail(runFailure)
+        return gate ? Effect.as(Deferred.await(gate), result) : Effect.succeed(result)
       }),
   } as unknown as AppProcess.Interface),
 )
@@ -84,6 +90,7 @@ const reset = () => {
   runs.length = 0
   denyAction = undefined
   runFailure = undefined
+  gate = undefined
   afterPermission = () => Effect.void
   result = {
     command: "mock",
@@ -111,13 +118,23 @@ const withTool = <A, E, R>(
   }).pipe(
     Effect.provide(
       AppNodeBuilder.build(
-        LayerNode.group([ToolRegistry.node, ToolRegistry.toolsNode, LocationMutation.node, BashTool.node]),
+        LayerNode.group([
+          ToolRegistry.node,
+          ToolRegistry.toolsNode,
+          LocationMutation.node,
+          BashTool.node,
+          BackgroundJob.node,
+        ]),
         [
           [Location.node, activeLocation],
           [PermissionV2.node, permission],
           [AppProcess.node, processLayer],
           [Config.node, config],
           [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
+          // Completion delivery is exercised end-to-end in tool-job.test.ts; here
+          // the delivery watcher tolerates these fakes by contract (defect-guarded).
+          [Database.node, Layer.succeed(Database.Service, { db: {} } as unknown as Database.Interface)],
+          [EventV2.node, Layer.succeed(EventV2.Service, {} as unknown as EventV2.Interface)],
         ],
       ),
     ),
@@ -142,7 +159,7 @@ describe("BashTool", () => {
           Effect.gen(function* () {
             const definitions = yield* toolDefinitions(registry)
             expect(definitions.map((tool) => tool.name)).toEqual(["bash"])
-            expect(definitions[0]?.inputSchema).not.toHaveProperty("properties.background")
+            expect(definitions[0]?.inputSchema).toHaveProperty("properties.background")
             expect(definitions[0]?.inputSchema).not.toHaveProperty("properties.description")
             expect(definitions[0]?.outputSchema).not.toHaveProperty("properties.output")
             expect(definitions[0]?.outputSchema).not.toHaveProperty("properties.command")
@@ -410,6 +427,96 @@ describe("BashTool", () => {
                 truncated: false,
               })
             }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("launches background commands as owned registry jobs without blocking settlement", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return Effect.gen(function* () {
+          gate = yield* Deferred.make<void>()
+          yield* withTool(tmp.path, (registry) =>
+            Effect.gen(function* () {
+              // The gate keeps the command running; if background settlement awaited
+              // the process this call would hang and fail the live-test timeout.
+              const settled = yield* settleTool(registry, call({ command: "sleep 5", background: true }, "call-bg"))
+              const job = (settled.output?.structured as { job?: string }).job
+              expect(typeof job).toBe("string")
+              expect(settled.output?.content).toEqual([
+                {
+                  type: "text",
+                  text: expect.stringContaining(`Background job ${job} started`),
+                },
+              ])
+              expect(assertions).toMatchObject([
+                { sessionID, action: "bash", resources: ["sleep 5"], save: ["sleep 5"] },
+              ])
+
+              const jobs = yield* BackgroundJob.Service
+              expect(yield* jobs.get(job!)).toMatchObject({
+                type: "bash",
+                status: "running",
+                title: "sleep 5",
+                metadata: {
+                  sessionID,
+                  agent: toolIdentity.agent,
+                  assistantMessageID: toolIdentity.assistantMessageID,
+                  toolCallID: "call-bg",
+                  command: "sleep 5",
+                  directory: realpathSync(tmp.path),
+                },
+              })
+
+              yield* Deferred.succeed(gate!, undefined)
+              const waited = yield* jobs.wait({ id: job!, timeout: 5_000 })
+              expect(waited).toMatchObject({ timedOut: false, info: { status: "completed" } })
+              expect(waited.info?.output).toContain("hello\n")
+              expect(waited.info?.output).toContain("Command exited with code 0.")
+              expect(runs).toMatchObject([{ command: "sleep 5", cwd: realpathSync(tmp.path) }])
+            }),
+          )
+        })
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("does not leak a job when a background launch fails before the process starts", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        const workdir = path.join(tmp.path, "src")
+        afterPermission = (input) =>
+          input.action === "bash"
+            ? Effect.promise(async () => {
+                await fs.rm(workdir, { recursive: true })
+                await fs.writeFile(workdir, "not a directory")
+              }).pipe(Effect.orDie)
+            : Effect.void
+        return Effect.promise(() => fs.mkdir(workdir)).pipe(
+          Effect.andThen(
+            withTool(tmp.path, (registry) =>
+              Effect.gen(function* () {
+                const result = yield* executeTool(
+                  registry,
+                  call({ command: "pwd", workdir: "src", background: true }, "call-bg-fail"),
+                )
+                expect(result).toMatchObject({
+                  type: "error",
+                  value: expect.stringContaining("Unable to execute command"),
+                })
+                expect(runs).toEqual([])
+                const jobs = yield* BackgroundJob.Service
+                expect(yield* jobs.list()).toEqual([])
+              }),
+            ),
           ),
         )
       },
