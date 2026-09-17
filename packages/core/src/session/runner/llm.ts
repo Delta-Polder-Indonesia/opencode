@@ -33,7 +33,7 @@ import { SessionSchema } from "../schema"
 import { SessionStore } from "../store"
 import { type RunError, Service } from "./index"
 import { SessionRunnerModel } from "./model"
-import { createLLMEventPublisher } from "./publish-llm-event"
+import { createLLMEventPublisher, STREAM_DELTA_COALESCE } from "./publish-llm-event"
 import { toLLMMessages } from "./to-llm-message"
 import { MAX_STEPS_PROMPT } from "./max-steps"
 import { Snapshot } from "../../snapshot"
@@ -222,6 +222,7 @@ const layer = Layer.effect(
       if (yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request }))
         return yield* Effect.die(continueAfterCompaction(currentStep))
       const startSnapshot = yield* snapshots.capture()
+      const withPublication = Semaphore.makeUnsafe(1).withPermit
       const publisher = createLLMEventPublisher(events, {
         sessionID: session.id,
         agent: agent.id,
@@ -232,7 +233,15 @@ const layer = Layer.effect(
         },
         snapshot: startSnapshot,
       })
-      const withPublication = Semaphore.makeUnsafe(1).withPermit
+      // Bound live-only delta event volume: drain coalesced text/reasoning/tool-input buffers
+      // on a fixed window instead of emitting one event per provider chunk. Buffered deltas
+      // always flush before their fragment `Ended` boundary and via the final `flush()`, so
+      // no consumer observes a reordered or lost stream. See specs/v2/streaming-responsiveness.md.
+      yield* Effect.sleep(STREAM_DELTA_COALESCE.window).pipe(
+        Effect.andThen(withPublication(publisher.flushDeltas)),
+        Effect.forever,
+        Effect.forkScoped,
+      )
       const publish = (event: LLMEvent, outputPaths: ReadonlyArray<string> = []) =>
         withPublication(publisher.publish(event, outputPaths))
       let overflowFailure: ProviderErrorEvent | undefined
