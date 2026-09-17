@@ -66,21 +66,30 @@ Next reviewed slices:
   delivers the usual inbox completion note to existing owner sessions; `job_*` tools fall back
   to the durable row after registry loss and keep owner-bound hiding. Single-writer-per-database
   assumption documented; fencing stays deferred. See `specs/v2/background-jobs.md`. Remaining
-  slices tracked there: auto-resume on completion (awaits the continuation-recovery slice
-  below), stale-owner fencing, HTTP mutation (needs fencing), and background agent dispatch
-  (needs a V2 task tool port)
+  slices tracked there: stale-owner fencing, HTTP mutation (needs fencing), and background
+  agent dispatch (needs a V2 task tool port)
 - ~~expose HTTP background-job observation~~ **done** (arena/01a0b189): read-only
   `GET /api/job` (+ `?sessionID`/`?status`/`?limit`) and `GET /api/job/:jobID` on the V2
   protocol surface, backed by the durable rows (newest-first; the registry is deliberately
   not consulted). Authorization decided explicitly: instance-wide, following the V1
   experimental precedent — owner-bound hiding stays model-facing-only. Output is the
   persisted 16 KB tail; contract and consequences in `specs/v2/background-jobs.md`
+- ~~auto-resume idle Sessions when background-job completion notes land~~ **done** (arena/01a0b19d):
+  live settlement delivery admits the note as a `steer` (an active drain promotes it at the next
+  provider-turn boundary instead of waiting to go idle) and publishes a process-local advisory wake
+  over a shared `SessionWake` hub that the root execution layer subscribes to, so an idle Session
+  resumes without the tool layer depending on `SessionExecution`. Restart recovery stays
+  `queue`-delivery and silent: a just-booted process does not schedule provider work. The wake is
+  advisory only — it never re-dispatches an interrupted provider attempt. See
+  `specs/v2/background-jobs.md`
 - add durable/clustered interruption, retries, and stale-owner fencing only as
   their slices become concrete
 
 ### Deferred durable continuation recovery
 
 Do not infer that ambiguous provider work is safe to retry from an advisory wake.
+Inbox-driven resume is landed for background-job completion (see the entry above),
+but it only drains durable input; it never re-dispatches a provider attempt.
 The first inbox-driven runner intentionally omits outer provider-attempt markers
 until they have a concrete consumer and a complete recovery policy.
 

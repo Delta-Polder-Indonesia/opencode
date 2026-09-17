@@ -2,8 +2,9 @@
 
 Catatan kerja fork `Delta-Polder-Indonesia/opencode`. Sesi berjalan:
 `arena/01a0b0bc-opencode` (item 1–3, PR #3), `arena/01a0b171-opencode`
-(item 4a/gate 1, PR #4), lalu `arena/01a0b189-opencode` (item 4a-lanjut/gate 3,
-PR sesuai branch). Ditulis ulang 2026-09-17 setelah slice gate 3 selesai.
+(item 4a/gate 1, PR #4), `arena/01a0b189-opencode` (item 4a-lanjut/gate 3),
+lalu `arena/01a0b19d-opencode` (gate 3 lanjutan: auto-resume inbox).
+Ditulis ulang 2026-09-17 setelah slice auto-resume selesai.
 Rencana induk: 5 perbaikan prioritas yang disepakati user (lihat
 `specs/v2/todo.md` dan dokumen per-fase di `specs/v2/`).
 
@@ -64,13 +65,32 @@ background-job.ts` yang hanya butuh `Database.Service`.
      `tool-bash.test.ts` diperbarui sadar: entri gate job dihapus karena
      sudah selesai.
 
+6. **Auto-resume inbox saat completion job** — branch
+   `arena/01a0b19d-opencode`. Catatan completion live kini diadmit sebagai
+   `steer` (drain aktif mempromosikannya di batas provider-turn berikutnya,
+   bukan menunggu drain nganggur) dan memicu wake advisory process-local
+   lewat hub `SessionWake` (`packages/core/src/session/wake.ts`) yang
+   di-subscribe `SessionExecutionLocal` di root; tool layer tidak lagi
+   (dan tidak boleh) bergantung pada `SessionExecution` karena itu menutup
+   siklus layer runner → tool registry → bash → execution → runner.
+   Recovery saat boot tetap `queue` TANPA wake (proses yang baru boot tidak
+   menjadwalkan kerja provider; startup discovery tetap di slice recovery).
+   Hub adalah global node biasa: satu instance per proses, dibagi ke
+   location tree karena node eksekusi juga bergantung padanya (diuji di
+   `session-wake.test.ts`, termasuk kontrol location-only tetap
+   per-Location). Wake bersifat advisory: tidak pernah me-retry provider
+   attempt yang ambigu. Dok: `specs/v2/background-jobs.md` +
+   `specs/v2/session.md` + entri done di `specs/v2/todo.md`.
+
 ## Yang BELUM selesai (antrian sesi berikutnya, urutan prioritas user)
 
 4-lanjut. **Sisa item #4** — urutannya:
 a. **Durable continuation recovery** (bagian "Deferred durable
-continuation recovery" di `todo.md`) — termasuk auto-resume sesi idle
-saat catatan completion masuk (sengaja ditahan: mencegah siklus layer
-runner↔tool) dan steer-ke-sesi-aktif.
+continuation recovery" di `todo.md`) — auto-resume inbox sudah DONE
+(arena/01a0b19d, lihat #6). Yang tersisa dari slice ini: policy pemulihan
+penuh — provider-attempt preparation vs dispatch ambiguity, keputusan
+eksplisit `retry`/`abandon`, bounded automatic retry, budget/backoff,
+status pemulihan yang terlihat, dan startup discovery.
 b. **Stale-owner fencing / clustered execution** — lease/heartbeat di
 atas `runtime_id`; terkait interruption/retries terkluster di todo.
 Prekursor HTTP mutation (cancel via API) menunggu ini.

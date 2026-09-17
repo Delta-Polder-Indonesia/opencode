@@ -12,6 +12,7 @@ import { SessionInput } from "../session/input"
 import { SessionMessage } from "../session/message"
 import { Prompt } from "../session/prompt"
 import { SessionSchema } from "../session/schema"
+import { SessionWake } from "../session/wake"
 import { SessionTable } from "../session/sql"
 import { Tool } from "./tool"
 import { ToolRegistry } from "./registry"
@@ -56,6 +57,8 @@ export interface LaunchInput {
   readonly jobs: BackgroundJob.Interface
   readonly db: Database.Interface["db"]
   readonly events: EventV2.Interface
+  /** Process-local wake signal for the owning Session (see `session/wake.ts`). */
+  readonly wake: SessionWake.Interface
   /** Long-lived scope (Location scope) that outlives the settling tool call. */
   readonly scope: Scope.Scope
   readonly type: string
@@ -84,32 +87,62 @@ const completionNote = (info: BackgroundJob.Info) => {
   ].join("\n\n")
 }
 
+type NoteTarget = {
+  readonly db: Database.Interface["db"]
+  readonly events: EventV2.Interface
+  readonly sessionID: SessionSchema.ID
+  readonly info: BackgroundJob.Info
+}
+
 /**
- * Admit one durable queue-delivery session input reporting job settlement. Same
- * admission path as user prompts, so the note is recorded once and surfaces
- * through normal queued-input promotion on the session's next activity.
- * Cancelled jobs are never delivered: the cancelling actor already knows.
- * Delivery never auto-resumes a session — see specs/v2/background-jobs.md.
+ * Admit one durable session input reporting job settlement. Same admission
+ * path as user prompts, so the note is recorded once and, once promoted,
+ * becomes an ordinary visible user message. Cancelled jobs are never
+ * delivered: the cancelling actor already knows. Returns whether a note was
+ * admitted.
  */
-const deliver = Effect.fn("JobTool.deliver")(function* (
-  db: Database.Interface["db"],
-  events: EventV2.Interface,
-  sessionID: SessionSchema.ID,
-  info: BackgroundJob.Info,
+const admitNote = Effect.fn("JobTool.admitNote")(function* (
+  target: NoteTarget,
+  delivery: SessionInput.Delivery,
 ) {
-  if (info.status === "cancelled" || info.status === "running") return
-  yield* SessionInput.admit(db, events, {
+  if (target.info.status === "cancelled" || target.info.status === "running") return false
+  yield* SessionInput.admit(target.db, target.events, {
     id: SessionMessage.ID.create(),
-    sessionID,
-    prompt: Prompt.fromUserMessage({ text: completionNote(info) }),
-    delivery: "queue",
+    sessionID: target.sessionID,
+    prompt: Prompt.fromUserMessage({ text: completionNote(target.info) }),
+    delivery,
   })
+  return true
+})
+
+/**
+ * Live settlement delivery: the note is a `steer` input, so an active drain
+ * promotes it at its next safe provider-turn boundary, and the advisory wake
+ * lets an idle Session resume instead of waiting for the next activity. The
+ * wake is process-local and edge-triggered; the durable note never depends on
+ * it. See specs/v2/background-jobs.md.
+ */
+const deliverSettled = Effect.fn("JobTool.deliverSettled")(function* (
+  target: NoteTarget & { readonly wake: SessionWake.Interface },
+) {
+  if (yield* admitNote(target, "steer")) yield* target.wake.request(target.sessionID)
+})
+
+/**
+ * Restart-recovery delivery: claimed rows stay `queue` inputs and never wake.
+ * A process that just booted does not schedule provider work for its recovery
+ * notes; the Session learns the job's fate on its next activity, and startup
+ * discovery belongs to the deferred continuation-recovery slice.
+ */
+const deliverRecovered = Effect.fn("JobTool.deliverRecovered")(function* (target: NoteTarget) {
+  yield* admitNote(target, "queue")
 })
 
 /**
  * Launch one tool-owned background job and fork its completion delivery watcher.
- * The watcher waits for settlement, persists the terminal status, then admits
- * the durable completion note. Persistence is ordered before delivery so a
+ * The watcher waits for settlement, persists the terminal status, admits the
+ * durable completion note, then requests the advisory wake that resumes the
+ * owning Session when it is idle. Persistence is ordered before delivery so a
  * crash in between recovers as `interrupted` (unknown outcome) rather than a
  * silently lost settlement. The watcher lives in the long-lived location scope
  * (not the settling fiber) and tolerates every durability/inbox/database
@@ -144,7 +177,15 @@ export const launch = Effect.fn("JobTool.launch")(function* (input: LaunchInput)
                 Effect.annotateLogs({ jobID: info.id }),
               ),
             ),
-            Effect.andThen(deliver(input.db, input.events, input.sessionID, result.info)),
+            Effect.andThen(
+              deliverSettled({
+                db: input.db,
+                events: input.events,
+                wake: input.wake,
+                sessionID: input.sessionID,
+                info: result.info,
+              }),
+            ),
           ),
     ),
     Effect.catch(() => Effect.void),
@@ -178,7 +219,7 @@ export const recover = Effect.fn("JobTool.recover")(function* (
       .get()
       .pipe(Effect.orDie)
     if (!session) continue
-    yield* deliver(db, events, sessionID, info).pipe(
+    yield* deliverRecovered({ db, events, sessionID, info }).pipe(
       Effect.catch(() => Effect.void),
       Effect.catchDefect(() => Effect.void),
     )

@@ -2,7 +2,8 @@
 
 Status: gates 1+2 implemented (gate 2 on branch `arena/01a0b0bc-opencode`,
 gate 1 on branch `arena/01a0b171-opencode`); gate 3 (HTTP observation) is
-specified below and implemented on `arena/01a0b189-opencode`. Supersedes the
+specified below and implemented on `arena/01a0b189-opencode`; auto-resume on
+completion delivery implemented on `arena/01a0b19d-opencode`. Supersedes the
 "integrate the new BackgroundJob service with V2 tool execution" entry in
 `todo.md`. This document is the design contract; keep the remaining-slices
 section accurate as follow-ups land.
@@ -70,24 +71,43 @@ error | cancelled`, plus `interrupted` for rows claimed by restart recovery)
 
 ### Completion delivery through the session inbox
 
-When a background job finishes with `completed` or `error`, the launcher
-admits a durable queue-delivery session input
-(`SessionInput.admit`, the exact path user prompts use) containing a short
-note: job id, command, status, exit/error line, and an output preview (last
-~1.5 KB; full output via `job_get`). Being a real `PromptAdmitted` event,
-the note is durably recorded and joins normal queued-input promotion: it
-surfaces to the model on the session's **next run** (or the next queued
-promotion of the current run).
+When a background job finishes with `completed`, `error`, or `interrupted`,
+the launcher admits a durable session input (`SessionInput.admit`, the exact
+path user prompts use) containing a short note: job id, command, status,
+exit/error line, and an output preview (last ~1.5 KB; full output via
+`job_get`). The note is a real `PromptAdmitted` event either way, so it is
+durably recorded once and, once promoted, becomes an ordinary visible user
+message.
 
-Delivery does **not** auto-resume an idle session. Starting a provider turn
-is `SessionExecution` territory, and depending on it from a tool would close
-a layer cycle (runner → tool registry → bash → execution → runner). Deferred
-to the continuation-recovery slice in `todo.md`, together with steer-vs-queue
-promotion of completion notes (`active` set lookup).
+Live settlement delivery then asks for execution:
 
-Restart recovery delivers the same kind of note for jobs it claims as
-`interrupted` (see below), so the session learns the job's fate on its next
-activity even across a process crash.
+- The note is admitted with `steer` delivery, so an **active** drain promotes
+  it at its next safe provider-turn boundary instead of waiting for the run to
+  go idle (or for the next user turn).
+- The launcher also publishes a process-local advisory wake. An **idle**
+  session resumes: the runner drains, promotes eligible input, and still only
+  reaches a provider when the note (or other pending input) is promotable.
+
+The wake is deliberately neither a durable/public event nor a tool-layer
+dependency on `SessionExecution`. Depending on execution from a tool would
+close a layer cycle (runner → tool registry → bash → execution → runner)
+because execution resolves the owning Location. Instead the tool layer
+publishes on a process-global `SessionWake` hub
+(`packages/core/src/session/wake.ts`), and the root-level
+`SessionExecutionLocal` subscribes and forwards wakes to its coordinator.
+The hub is an ordinary global node: one shared instance per process, reachable
+from Location trees because the execution node also depends on it. A graph
+that never provides execution simply has no subscriber. Wakes are
+edge-triggered and coalescing; the durable note remains the truth, so a
+dropped wake degrades to the previous behavior.
+
+Restart recovery is deliberately different: claimed rows are delivered with
+`queue` delivery and **no** wake. A process that just booted does not schedule
+provider work for its recovery notes; the session learns the job's fate on its
+next activity, and startup discovery belongs to the deferred
+continuation-recovery slice in `todo.md`. Recovery notes are still delivered
+for jobs claimed as `interrupted` (see below), so the fate is never lost
+across a process crash.
 
 ## Durable status (gate 1)
 
@@ -270,16 +290,23 @@ Unit/integration coverage in `packages/core/test/`:
   - `job_wait` returns `timedOut: true` for unfinished jobs, resolves with
     output after completion, and returns settled persisted rows immediately,
   - `job_cancel` transitions the job to `cancelled` and releases waiters,
-  - completion delivery appears as a pending queue-delivery session input
-    via `SessionInput.find`, and cancelled jobs deliver nothing,
+  - live completion delivery appears as a pending steer-delivery session
+    input via `SessionInput.find`, requests exactly one wake for the owner
+    session, and cancelled jobs deliver nothing and never wake,
   - launch persists a `running` row and settlement persists status, bounded
     output tail, and completion time; cancellation persists `cancelled`,
   - recovery claims foreign-runtime `running` rows as `interrupted`, leaves
-    current-runtime and settled rows untouched, delivers a queue note for
-    existing owner sessions, skips deleted sessions, and the claimed job
-    becomes observable through `job_get` with an empty registry,
+    current-runtime and settled rows untouched, delivers a queue note (with
+    no wake) for existing owner sessions, skips deleted sessions, and the
+    claimed job becomes observable through `job_get` with an empty registry,
   - `BackgroundJobStore.list` orders newest-first, and filters by owner
     session, status, and limit.
+- `session-wake.test.ts`
+  - a wake drains an idle Session through its Location's `SessionRunner`, and
+    wakes for Sessions that no longer exist are ignored,
+  - the hub is one shared instance between the application root and Location
+    trees, while a global reachable only through a Location tree stays
+    per-Location (the property the wiring depends on).
 - `httpapi-exercise` route coverage:
   - `v2.job.list` returns seeded durable rows newest-first and honors the
     `sessionID` filter,
@@ -292,9 +319,13 @@ already takes ~700 s and is OOM-prone) and is intentionally not gating here.
 
 ## Remaining slices
 
-- **Auto-resume on completion delivery**: wake `SessionExecution` for idle
-  sessions (and steer into active ones) once the decision belongs to the
-  continuation-recovery slice rather than the tool layer.
+- **Continuation-recovery policy**: inbox-driven resume landed here (idle
+  sessions wake, active drains steer at the next provider-turn boundary), but
+  the wake stays advisory and never re-dispatches an interrupted provider
+  attempt. Provider-attempt preparation versus dispatch ambiguity, explicit
+  `retry`/`abandon` decisions for unknown outcomes, retry budget/backoff,
+  visible recovery status, and startup discovery remain deferred to the slice
+  described in `specs/v2/todo.md`.
 - **HTTP mutation (cancel over API)**: read-only observation landed with
   gate 3; cross-process cancel/wait needs stale-owner fencing first so a
   cancel of a dead runtime's `running` row cannot pretend to stop work.
