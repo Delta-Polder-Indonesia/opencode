@@ -160,7 +160,7 @@ Inbox delivery is explicit:
 Execution has two entry points:
 
 - `run` is an explicit resume. It joins any active execution or starts a forced drain while idle. A forced drain bypasses the no-eligible-input guard, but preparation may still fail before a provider attempt.
-- `wake` reports newly recorded durable inbox work. Repeated wakes coalesce. A wake calls the provider only when it can promote eligible input.
+- `wake` reports newly recorded durable inbox work. Repeated wakes coalesce. A wake calls the provider only when it can promote eligible input. Location-scoped publishers that cannot depend on execution (the tool layer) report inbox work over a process-global `SessionWake` hub; the root-level executor subscribes and forwards those wakes to the coordinator. That signal is advisory and process-local: nothing durable depends on it, and a graph without an executor simply has no subscriber.
 
 Post-crash continuation recovery is intentionally deferred. A wake does not infer that ambiguous provider work is safe to retry after an input has already been promoted. Explicit `run` may deliberately continue from durable projected history. A future recovery slice should model provider-dispatch ambiguity, required continuation, queued-input promotion, retry policy, and visible recovery status together. It must not assume an enclosing durable execution identity that the Session model does not otherwise need.
 

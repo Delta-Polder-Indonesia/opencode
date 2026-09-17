@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { eq } from "drizzle-orm"
-import { Deferred, Effect, Layer } from "effect"
+import { Deferred, Effect, Layer, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { BackgroundJob } from "@opencode-ai/core/background-job"
 import { BackgroundJobTable } from "@opencode-ai/core/background-job/sql"
@@ -20,6 +20,7 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionInputTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionWake } from "@opencode-ai/core/session/wake"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { BashTool } from "@opencode-ai/core/tool/bash"
 import { JobTool } from "@opencode-ai/core/tool/job"
@@ -196,6 +197,18 @@ const config = Layer.succeed(
   }),
 )
 
+const wakeRequests: SessionV2.ID[] = []
+const sessionWake = Layer.succeed(
+  SessionWake.Service,
+  SessionWake.Service.of({
+    request: (sessionID) =>
+      Effect.sync(() => {
+        wakeRequests.push(sessionID)
+      }),
+    subscribe: Effect.succeed(Stream.empty),
+  }),
+)
+
 const itDb = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([
@@ -231,6 +244,7 @@ const itDb = testEffect(
       [AppProcess.node, appProcess],
       [Config.node, config],
       [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
+      [SessionWake.node, sessionWake],
     ],
   ),
 )
@@ -274,6 +288,13 @@ const deliveredNotes = Database.Service.use(({ db }) =>
 
 type NoteRow = typeof SessionInputTable.$inferSelect
 
+const pollWakes = (count: number, attempts = 500): Effect.Effect<void> =>
+  wakeRequests.length >= count
+    ? Effect.void
+    : attempts <= 0
+      ? Effect.void
+      : Effect.sleep(1).pipe(Effect.andThen(pollWakes(count, attempts - 1)))
+
 const pollNotes = (count: number, attempts = 500): Effect.Effect<NoteRow[], never, Database.Service> =>
   deliveredNotes.pipe(
     Effect.flatMap((rows) =>
@@ -286,9 +307,10 @@ const pollNotes = (count: number, attempts = 500): Effect.Effect<NoteRow[], neve
   )
 
 describe("Background completion delivery", () => {
-  itDb.live("delivers a durable queued session input when a background job completes", () =>
+  itDb.live("delivers a durable steered session input and wakes the owner session when a job completes", () =>
     Effect.gen(function* () {
       yield* setup
+      wakeRequests.length = 0
       processGate = undefined
       processOutput = Buffer.from("mock-output\n")
       const registry = yield* ToolRegistry.Service
@@ -304,18 +326,21 @@ describe("Background completion delivery", () => {
       const notes = yield* pollNotes(1)
       const note = notes.find((row) => row.prompt.text.includes(job!))
       expect(note).toBeDefined()
-      expect(note?.delivery).toBe("queue")
+      expect(note?.delivery).toBe("steer")
       expect(note?.promoted_seq).toBeNull()
       expect(note?.prompt.text).toContain(`[background job ${job} completed]`)
       expect(note?.prompt.text).toContain("Command exited with code 0.")
       expect(note?.prompt.text).toContain("mock-output")
       expect(note?.prompt.text).toContain(`job_get({ id: "${job}" })`)
+      yield* pollWakes(1)
+      expect(wakeRequests).toEqual([sessionID])
     }),
   )
 
   itDb.live("delivers nothing when a job is cancelled", () =>
     Effect.gen(function* () {
       yield* setup
+      wakeRequests.length = 0
       processOutput = Buffer.from("mock-output\n")
       const registry = yield* ToolRegistry.Service
       const jobs = yield* BackgroundJob.Service
@@ -337,6 +362,7 @@ describe("Background completion delivery", () => {
       yield* Effect.sleep(50)
       const notes = yield* deliveredNotes
       expect(notes.filter((row) => row.prompt.text.includes(job!))).toEqual([])
+      expect(wakeRequests).toEqual([])
     }),
   )
 })
@@ -459,6 +485,7 @@ describe("Restart recovery", () => {
   itDb.effect("claims foreign-runtime running rows as interrupted and notifies the owner session", () =>
     Effect.gen(function* () {
       yield* setup
+      wakeRequests.length = 0
       const { db } = yield* Database.Service
       const events = yield* EventV2.Service
       const jobID = "job_recovery_claim"
@@ -482,6 +509,7 @@ describe("Restart recovery", () => {
       const note = notes.find((n) => n.prompt.text.includes(jobID))
       expect(note).toBeDefined()
       expect(note?.delivery).toBe("queue")
+      expect(wakeRequests).toEqual([])
       expect(note?.promoted_seq).toBeNull()
       expect(note?.prompt.text).toContain(`[background job ${jobID} interrupted]`)
       expect(note?.prompt.text).toContain(BackgroundJobStore.INTERRUPTED_ERROR)

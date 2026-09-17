@@ -14,6 +14,7 @@ import { LocationMutation } from "../location-mutation"
 import { AppProcess } from "../process"
 import { PermissionV2 } from "../permission"
 import { PositiveInt } from "../schema"
+import { SessionWake } from "../session/wake"
 import { JobTool } from "./job"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
@@ -114,6 +115,7 @@ const layer = Layer.effectDiscard(
     const jobs = yield* BackgroundJob.Service
     const database = yield* Database.Service
     const events = yield* EventV2.Service
+    const wake = yield* SessionWake.Service
     const scope = yield* Scope.Scope
 
     yield* tools
@@ -197,6 +199,7 @@ const layer = Layer.effectDiscard(
                   jobs,
                   db: database.db,
                   events,
+                  wake,
                   scope,
                   type: name,
                   sessionID: context.sessionID,
@@ -264,5 +267,6 @@ export const node = makeLocationNode({
     BackgroundJob.node,
     Database.node,
     EventV2.node,
+    SessionWake.node,
   ],
 })
