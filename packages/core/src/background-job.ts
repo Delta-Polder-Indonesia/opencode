@@ -4,7 +4,12 @@ import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Scope, Synchroniz
 import { Identifier } from "./id/id"
 import { makeGlobalNode } from "./effect/app-node"
 
-export type Status = "running" | "completed" | "error" | "cancelled"
+/**
+ * `interrupted` is never produced by the live registry: it is the durable
+ * store's restart-recovery verdict for a row that was still `running` when
+ * its owning process died. See `background-job/store.ts`.
+ */
+export type Status = "running" | "completed" | "error" | "cancelled" | "interrupted"
 
 export type Info = {
   id: string

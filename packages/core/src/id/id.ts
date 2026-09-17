@@ -10,6 +10,7 @@ const prefixes = {
   part: "prt",
   pty: "pty",
   tool: "tool",
+  runtime: "runtime",
   workspace: "wrk",
 } as const
 
