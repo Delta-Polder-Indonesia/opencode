@@ -182,6 +182,33 @@ function withContext<A, E>(
           messages: (sessionID) =>
             run(modules.Session.Service.use((svc) => svc.messages({ sessionID }).pipe(Effect.orDie))),
           todos: (sessionID, todos) => run(modules.Todo.Service.use((svc) => svc.update({ sessionID, todos }))),
+          jobs: (input) =>
+            run(
+              modules.Database.Service.use(({ db }) =>
+                Effect.gen(function* () {
+                  const now = Date.now()
+                  for (const [index, job] of input.entries()) {
+                    const info = {
+                      id: job.id,
+                      type: job.type ?? "bash",
+                      status: "running" as const,
+                      ...(job.title === undefined ? {} : { title: job.title }),
+                      started_at: job.startedAt ?? now + index,
+                      ...(job.output === undefined ? {} : { output: job.output }),
+                      ...(job.sessionID === undefined ? {} : { metadata: { sessionID: job.sessionID } }),
+                    }
+                    yield* modules.BackgroundJobStore.insert(db, info)
+                    if (job.status === "running") continue
+                    yield* modules.BackgroundJobStore.settle(db, {
+                      ...info,
+                      status: job.status,
+                      completed_at: job.completedAt ?? now + index,
+                      ...(job.error === undefined ? {} : { error: job.error }),
+                    })
+                  }
+                }),
+              ),
+            ),
           worktree: (input) => run(modules.Worktree.Service.use((svc) => svc.create(input).pipe(Effect.orDie))),
           worktreeRemove: (directory) =>
             run(modules.Worktree.Service.use((svc) => svc.remove({ directory })).pipe(Effect.ignore)),

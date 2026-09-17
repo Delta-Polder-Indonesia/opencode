@@ -66,9 +66,15 @@ Next reviewed slices:
   delivers the usual inbox completion note to existing owner sessions; `job_*` tools fall back
   to the durable row after registry loss and keep owner-bound hiding. Single-writer-per-database
   assumption documented; fencing stays deferred. See `specs/v2/background-jobs.md`. Remaining
-  slices tracked there: HTTP observation (gate 3 — authorization question is now the open item),
-  auto-resume on completion (awaits the continuation-recovery slice below), stale-owner fencing,
-  and background agent dispatch (needs a V2 task tool port)
+  slices tracked there: auto-resume on completion (awaits the continuation-recovery slice
+  below), stale-owner fencing, HTTP mutation (needs fencing), and background agent dispatch
+  (needs a V2 task tool port)
+- ~~expose HTTP background-job observation~~ **done** (arena/01a0b189): read-only
+  `GET /api/job` (+ `?sessionID`/`?status`/`?limit`) and `GET /api/job/:jobID` on the V2
+  protocol surface, backed by the durable rows (newest-first; the registry is deliberately
+  not consulted). Authorization decided explicitly: instance-wide, following the V1
+  experimental precedent — owner-bound hiding stays model-facing-only. Output is the
+  persisted 16 KB tail; contract and consequences in `specs/v2/background-jobs.md`
 - add durable/clustered interruption, retries, and stale-owner fencing only as
   their slices become concrete
 

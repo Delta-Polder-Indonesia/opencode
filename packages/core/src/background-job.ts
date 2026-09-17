@@ -3,6 +3,7 @@ export * as BackgroundJob from "./background-job"
 import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Scope, SynchronizedRef } from "effect"
 import { Identifier } from "./id/id"
 import { makeGlobalNode } from "./effect/app-node"
+import type { SessionSchema } from "./session/schema"
 
 /**
  * `interrupted` is never produced by the live registry: it is the durable
@@ -21,6 +22,11 @@ export type Info = {
   output?: string
   error?: string
   metadata?: Record<string, unknown>
+  /**
+   * Owning session, present only on durable-store entries (the registry
+   * carries ownership in metadata). HTTP observation reads it directly.
+   */
+  session_id?: SessionSchema.ID
 }
 
 type Active = {

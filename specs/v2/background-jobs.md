@@ -1,10 +1,11 @@
 # V2 Background Jobs over Tool Execution
 
 Status: gates 1+2 implemented (gate 2 on branch `arena/01a0b0bc-opencode`,
-gate 1 on branch `arena/01a0b171-opencode`). Supersedes the "integrate the
-new BackgroundJob service with V2 tool execution" entry in `todo.md`. This
-document is the design contract; keep the remaining-slices section accurate
-as follow-ups land.
+gate 1 on branch `arena/01a0b171-opencode`); gate 3 (HTTP observation) is
+specified below and implemented on `arena/01a0b189-opencode`. Supersedes the
+"integrate the new BackgroundJob service with V2 tool execution" entry in
+`todo.md`. This document is the design contract; keep the remaining-slices
+section accurate as follow-ups land.
 
 ## Problem
 
@@ -23,8 +24,8 @@ three explicit re-introduction gates (`tool/bash.ts`):
    recovery, and authorization are defined.
 
 Gate 2 landed first (model-facing launch + owner-bound observation + inbox
-completion delivery). Gate 1 landed next and is specified below. Gate 3 stays
-closed by design; see "Remaining slices".
+completion delivery). Gate 1 landed next and is specified below. Gate 3 is
+specified in "HTTP observation (gate 3)" below.
 
 ## Model contract
 
@@ -95,18 +96,18 @@ activity even across a process crash.
 Tool-launched jobs persist to the `background_job` table in the (global)
 SQLite database:
 
-| column | content |
-| --- | --- |
-| `id` | job id (primary key) |
-| `type` | launcher type, e.g. `bash` |
-| `title` | display title (command preview) |
-| `session_id` | owning session (FK → `session`, cascade delete), indexed with `status` |
-| `status` | `running`, `completed`, `error`, `cancelled`, or `interrupted` |
-| `runtime_id` | per-process marker of the runtime that started the row |
-| `started_at` / `completed_at` | epoch millis |
-| `output` | bounded tail of the settled output (last 16 KB, `…`-prefixed when truncated) |
-| `error` | settled error text, or the recovery message |
-| `metadata` | the owner metadata JSON exactly as stored on the registry job |
+| column                        | content                                                                      |
+| ----------------------------- | ---------------------------------------------------------------------------- |
+| `id`                          | job id (primary key)                                                         |
+| `type`                        | launcher type, e.g. `bash`                                                   |
+| `title`                       | display title (command preview)                                              |
+| `session_id`                  | owning session (FK → `session`, cascade delete), indexed with `status`       |
+| `status`                      | `running`, `completed`, `error`, `cancelled`, or `interrupted`               |
+| `runtime_id`                  | per-process marker of the runtime that started the row                       |
+| `started_at` / `completed_at` | epoch millis                                                                 |
+| `output`                      | bounded tail of the settled output (last 16 KB, `…`-prefixed when truncated) |
+| `error`                       | settled error text, or the recovery message                                  |
+| `metadata`                    | the owner metadata JSON exactly as stored on the registry job                |
 
 Write path:
 
@@ -172,6 +173,84 @@ row).
   retained by the registry for the process lifetime, the durable row retains
   the bounded tail.
 
+## HTTP observation (gate 3)
+
+### Authorization decision (explicit)
+
+Job observation over HTTP is **instance-wide**: any authenticated consumer of
+the instance API may list and read every durable background job, including
+its owner metadata and output tail. Owner-bound hiding (cross-session jobs
+indistinguishable from absence) remains a **model-facing-only** property of
+the `job_*` tools and is deliberately not replicated at the HTTP layer.
+
+Rationale:
+
+- **V1 precedent**: the legacy experimental handler observes the instance
+  registry without per-session authorization (`sessionBackground` lists all
+  jobs and filters by `parentSessionId` client-side). There is no existing
+  HTTP surface where one consumer sees less session data than another.
+- **The rest of the V2 surface already exposes everything an owner-hiding
+  rule would protect**: any authenticated consumer can read a session's full
+  history, messages, and tool I/O via `/api/session/:id/...`. Hiding a job
+  row behind per-session authorization there would add inconsistency and a
+  false sense of confinement, not a real boundary.
+- **What owner-hiding actually protects** is the _model surface_: one
+  session's context window must not learn another session's jobs (nor can it
+  probe for them, since `job_get` answers "Unknown job"). That property lives
+  entirely in the tool layer and is unchanged by this gate.
+
+Corollaries: the authorization boundary for jobs is the instance's existing
+API authentication (same as every other route), not session membership.
+Rows of deleted sessions disappear by the FK cascade — observation of a
+deleted session's jobs ends with the session, matching the recovery rule
+that skips deliveries to deleted sessions.
+
+### Contract
+
+Two read-only routes on the durable store, mounted on the V2 protocol
+surface (group `server.job`):
+
+- `GET /api/job` (`v2.job.list`) — list durable job rows, newest first
+  (`started_at` desc, `id` desc as tiebreak). Query: optional `sessionID`
+  (owner session filter, uses the `(session_id, status)` index), optional
+  `status` literal filter, optional `limit` (default 50). Response
+  `{ data: BackgroundJobInfo[] }`.
+- `GET /api/job/:jobID` (`v2.job.get`) — one durable row, or 404
+  `JobNotFoundError` when no row has that id.
+
+The wire shape mirrors the model-facing job tools (`id`, `type`, `title`,
+`status` including `interrupted`, `started_at`, `completed_at`, `output`,
+`error`) plus `session_id` and `metadata`, so an app can render the same
+object a model sees. Output is always bounded by the same 16 KB tail the
+store persists — the HTTP surface observes durable truth, not the
+registry's unbounded in-memory text.
+
+**Truth source is the durable row, not the live registry.** The registry is
+process- and Location-scoped, so rows are the only observation source that
+means the same thing from every process, after restarts, and across
+Location rebuilds. Consequences, all within the existing best-effort
+durability contract:
+
+- a `running` row is live truth for "some runtime started this job";
+  a job whose settlement has not been persisted yet (or whose persistence
+  failed — logged, never blocking) may briefly or persistently read as
+  `running` after it actually finished remotely, exactly as it does to
+  restart recovery;
+- a job whose launch-row insert failed is invisible to HTTP observation
+  while remaining fully visible model-facing for its process lifetime —
+  the documented degrade-to-process-local path;
+- full live output is a model-facing registry feature; remote consumers get
+  the durable tail.
+
+Mutation (cancel/wait over HTTP) is deliberately out of scope: gate 3 is
+observation. Cross-process control would need the stale-owner fencing slice
+first (cancelling a `running` row owned by a dead runtime must not pretend
+to stop anything).
+
+V1 jobs stay out of this namespace by design: the legacy experimental
+surface continues to observe only V1 registry jobs, and `/api/job` exposes
+only V2 durable rows.
+
 ## Verification
 
 Unit/integration coverage in `packages/core/test/`:
@@ -198,7 +277,14 @@ Unit/integration coverage in `packages/core/test/`:
   - recovery claims foreign-runtime `running` rows as `interrupted`, leaves
     current-runtime and settled rows untouched, delivers a queue note for
     existing owner sessions, skips deleted sessions, and the claimed job
-    becomes observable through `job_get` with an empty registry.
+    becomes observable through `job_get` with an empty registry,
+  - `BackgroundJobStore.list` orders newest-first, and filters by owner
+    session, status, and limit.
+- `httpapi-exercise` route coverage:
+  - `v2.job.list` returns seeded durable rows newest-first and honors the
+    `sessionID` filter,
+  - `v2.job.get` returns one seeded row and answers 404 `JobNotFoundError`
+    for unknown ids.
 
 Core typecheck (`packages/core`, tsgo) must pass; the full
 `packages/opencode` typecheck does not fit the ~3.9 GB sandbox (baseline
@@ -206,16 +292,12 @@ already takes ~700 s and is OOM-prone) and is intentionally not gating here.
 
 ## Remaining slices
 
-- **Remote/HTTP observation (gate 3)**: durable status and restart recovery
-  now exist; what remains is defining authorization for job observation
-  (whose jobs may an API consumer list/read?) and adding the routes/SDK
-  surface, keeping owner-bound semantics for model-facing access. Until then
-  app-level observation (`@/background/job` instance registry, experimental
-  handler) continues to see only V1 jobs — V2 core jobs stay a separate
-  namespace by design.
 - **Auto-resume on completion delivery**: wake `SessionExecution` for idle
   sessions (and steer into active ones) once the decision belongs to the
   continuation-recovery slice rather than the tool layer.
+- **HTTP mutation (cancel over API)**: read-only observation landed with
+  gate 3; cross-process cancel/wait needs stale-owner fencing first so a
+  cancel of a dead runtime's `running` row cannot pretend to stop work.
 - **Stale-owner fencing / clustered execution**: lease or heartbeat-based
   ownership so multiple runtimes can share one database safely; builds on
   the `runtime_id` column but must not be inferred from it yet. Tracked with
@@ -225,5 +307,5 @@ already takes ~700 s and is OOM-prone) and is intentionally not gating here.
   does not exist in core yet; port `task` from the app package first
   (listed in `tool/builtins.ts` TODO).
 - Longer-running jobs beyond `MAX_TIMEOUT_MS` need a persistent-job concept
-  that survives restart *and* re-executes; deliberately out of scope —
+  that survives restart _and_ re-executes; deliberately out of scope —
   recovery records the loss, it does not replay the work.

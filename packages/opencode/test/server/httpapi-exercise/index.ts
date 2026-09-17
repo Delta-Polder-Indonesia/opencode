@@ -1246,6 +1246,135 @@ const scenarios: Scenario[] = [
     }))
     .status(404, undefined, "status"),
   http.protected
+    .get("/api/job", "v2.job.list")
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Job observation session" })
+        const other = yield* ctx.session({ title: "Other job session" })
+        yield* ctx.jobs([
+          {
+            id: "job_httpapi_completed",
+            status: "completed",
+            sessionID: session.id,
+            output: "seed-ok",
+            startedAt: 1000,
+            completedAt: 2000,
+          },
+          { id: "job_httpapi_running", status: "running", sessionID: session.id, startedAt: 3000 },
+          {
+            id: "job_httpapi_failed",
+            status: "error",
+            sessionID: other.id,
+            error: "boom",
+            startedAt: 2000,
+            completedAt: 2500,
+          },
+        ])
+        return session
+      }),
+    )
+    .at((ctx) => ({ path: "/api/job", headers: ctx.headers() }))
+    .json(
+      200,
+      (body, ctx) => {
+        object(body)
+        array(body.data)
+        const ids = (body.data as unknown[]).map((job) => (isRecord(job) ? job.id : undefined))
+        check(
+          ids.includes("job_httpapi_completed") &&
+            ids.includes("job_httpapi_running") &&
+            ids.includes("job_httpapi_failed"),
+          "job list should include every seeded row",
+        )
+        const running = (body.data as unknown[]).find((job) => isRecord(job) && job.id === "job_httpapi_running")
+        check(isRecord(running), "running seed should be listed")
+        if (isRecord(running)) {
+          check(running.status === "running", "running seed should keep status running")
+          check(running.session_id === ctx.state.id, "job rows should carry their owner session")
+          check(running.completed_at === undefined, "running rows have no completion time")
+          check(running.type === "bash", "seeded jobs default to the bash type")
+        }
+        const completed = (body.data as unknown[]).find((job) => isRecord(job) && job.id === "job_httpapi_completed")
+        check(isRecord(completed), "completed seed should be listed")
+        if (isRecord(completed)) {
+          check(completed.output === "seed-ok", "settled rows expose the persisted output")
+          check(completed.completed_at === 2000, "settled rows expose the completion time")
+        }
+        const indexOf = (id: unknown) => ids.indexOf(id)
+        check(
+          indexOf("job_httpapi_running") < indexOf("job_httpapi_failed") &&
+            indexOf("job_httpapi_failed") < indexOf("job_httpapi_completed"),
+          "job list should be newest-first",
+        )
+      },
+      "status",
+    ),
+  http.protected
+    .get("/api/job", "v2.job.list.session-filter")
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Filtered job session" })
+        const other = yield* ctx.session({ title: "Unrelated job session" })
+        yield* ctx.jobs([
+          { id: "job_httpapi_filter_hit", status: "running", sessionID: session.id, startedAt: 100 },
+          { id: "job_httpapi_filter_miss", status: "running", sessionID: other.id, startedAt: 200 },
+        ])
+        return session
+      }),
+    )
+    .at((ctx) => ({
+      path: `${route("/api/job", {})}?${new URLSearchParams({ sessionID: ctx.state.id })}`,
+      headers: ctx.headers(),
+    }))
+    .json(
+      200,
+      (body) => {
+        object(body)
+        array(body.data)
+        const ids = (body.data as unknown[]).map((job) => (isRecord(job) ? job.id : undefined))
+        check(ids.length === 1 && ids[0] === "job_httpapi_filter_hit", "sessionID filter should keep only owned rows")
+      },
+      "status",
+    ),
+  http.protected
+    .get("/api/job/{jobID}", "v2.job.get")
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Single job session" })
+        yield* ctx.jobs([
+          {
+            id: "job_httpapi_single",
+            status: "interrupted",
+            sessionID: session.id,
+            error: "Process exited while this job was running; its outcome is unknown.",
+            startedAt: 100,
+            completedAt: 150,
+          },
+        ])
+        return undefined
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/api/job/{jobID}", { jobID: "job_httpapi_single" }),
+      headers: ctx.headers(),
+    }))
+    .json(
+      200,
+      (body) => {
+        object(body)
+        check(isRecord(body.data) && body.data.id === "job_httpapi_single", "job get should return the seeded row")
+        check(isRecord(body.data) && body.data.status === "interrupted", "recovered rows observe as interrupted")
+      },
+      "status",
+    ),
+  http.protected
+    .get("/api/job/{jobID}", "v2.job.get.missing")
+    .at((ctx) => ({
+      path: route("/api/job/{jobID}", { jobID: "job_httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
+  http.protected
     .get("/session", "session.list")
     .seeded((ctx) => ctx.session({ title: "List me" }))
     .at((ctx) => ({ path: "/session?roots=true", headers: ctx.headers() }))

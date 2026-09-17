@@ -2685,6 +2685,27 @@ export type UnauthorizedError = {
   message: string
 }
 
+export type BackgroundJobInfo = {
+  id: string
+  type: string
+  status: "running" | "completed" | "error" | "cancelled" | "interrupted"
+  title?: string
+  session_id?: string
+  started_at: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  completed_at?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  output?: string
+  error?: string
+  metadata?: {
+    [key: string]: unknown
+  }
+}
+
+export type JobNotFoundError = {
+  _tag: "JobNotFoundError"
+  jobID: string
+  message: string
+}
+
 export type SessionsResponse = {
   data: Array<SessionV2Info>
   cursor: {
@@ -11331,6 +11352,78 @@ export type V2AgentListResponses = {
 }
 
 export type V2AgentListResponse = V2AgentListResponses[keyof V2AgentListResponses]
+
+export type V2JobListData = {
+  body?: never
+  path?: never
+  query?: {
+    sessionID?: string
+    status?: "running" | "completed" | "error" | "cancelled" | "interrupted"
+    limit?: string
+  }
+  url: "/api/job"
+}
+
+export type V2JobListErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2JobListError = V2JobListErrors[keyof V2JobListErrors]
+
+export type V2JobListResponses = {
+  /**
+   * Success
+   */
+  200: {
+    data: Array<BackgroundJobInfo>
+  }
+}
+
+export type V2JobListResponse = V2JobListResponses[keyof V2JobListResponses]
+
+export type V2JobGetData = {
+  body?: never
+  path: {
+    jobID: string
+  }
+  query?: never
+  url: "/api/job/{jobID}"
+}
+
+export type V2JobGetErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * JobNotFoundError
+   */
+  404: JobNotFoundError
+}
+
+export type V2JobGetError = V2JobGetErrors[keyof V2JobGetErrors]
+
+export type V2JobGetResponses = {
+  /**
+   * Success
+   */
+  200: {
+    data: BackgroundJobInfo
+  }
+}
+
+export type V2JobGetResponse = V2JobGetResponses[keyof V2JobGetResponses]
 
 export type V2SessionListData = {
   body?: never
