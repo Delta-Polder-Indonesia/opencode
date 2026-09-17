@@ -2,15 +2,19 @@ export * as BashTool from "./bash"
 
 import path from "path"
 import { ToolFailure } from "@opencode-ai/llm"
-import { Duration, Effect, Layer, Schema } from "effect"
+import { Duration, Effect, Layer, Schema, Scope } from "effect"
 import { ChildProcess } from "effect/unstable/process"
+import { BackgroundJob } from "../background-job"
 import { Config } from "../config"
+import { Database } from "../database/database"
 import { makeLocationNode } from "../effect/app-node"
+import { EventV2 } from "../event"
 import { FSUtil } from "../fs-util"
 import { LocationMutation } from "../location-mutation"
 import { AppProcess } from "../process"
 import { PermissionV2 } from "../permission"
 import { PositiveInt } from "../schema"
+import { JobTool } from "./job"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -30,12 +34,17 @@ export const Input = Schema.Struct({
     .annotate({
       description: `Timeout in milliseconds. Defaults to ${DEFAULT_TIMEOUT_MS} and may not exceed ${MAX_TIMEOUT_MS}.`,
     }),
+  background: Schema.Boolean.pipe(Schema.optional).annotate({
+    description:
+      "Run without blocking this turn: the command starts as a background job and this call returns immediately with a job id. Track the job with job_get or job_wait, cancel it with job_cancel; a completion note is delivered to the session automatically when the job finishes.",
+  }),
 })
 
 const StructuredOutput = Schema.Struct({
   exit: Schema.Number.pipe(Schema.optional),
   truncated: Schema.Boolean,
   timeout: Schema.Boolean.pipe(Schema.optional),
+  job: Schema.String.pipe(Schema.optional),
 })
 
 const Output = Schema.Struct({
@@ -70,7 +79,8 @@ const isTimeout = (error: AppProcess.AppProcessError) =>
 // TODO: Add plugin shell.env environment augmentation once V2 plugin hooks exist.
 // TODO: Add durable/live progress metadata streaming for long-running commands once V2 tool invocation progress context is wired.
 // TODO: Persist background job status and define restart recovery before exposing remote observation.
-// TODO: Re-add model-facing background launch only with owner-bound get/wait/cancel tools and completion delivery.
+// Model-facing background launch landed with owner-bound get/wait/cancel tools and inbox
+// completion delivery — see tool/job.ts and specs/v2/background-jobs.md.
 // TODO: Add HTTP background-job observation only after durable status, restart recovery, and authorization are defined.
 // TODO: Revisit process-group cleanup and platform coverage with shell-specific tests if current AppProcess semantics do not fully cover it.
 // TODO: Revisit binary output handling if stdout/stderr decoding is text-only.
@@ -102,11 +112,15 @@ const layer = Layer.effectDiscard(
     const appProcess = yield* AppProcess.Service
     const config = yield* Config.Service
     const permission = yield* PermissionV2.Service
+    const jobs = yield* BackgroundJob.Service
+    const database = yield* Database.Service
+    const events = yield* EventV2.Service
+    const scope = yield* Scope.Scope
 
     yield* tools
       .register({
         [name]: Tool.make({
-          description: `Execute one shell command string with the host user's filesystem, process, and network authority. The active Location is the default working directory. Relative workdir values resolve from that Location. External workdir values require external_directory approval; best-effort command-argument path warnings are advisory only. Timeout values are milliseconds (default: ${DEFAULT_TIMEOUT_MS}; maximum: ${MAX_TIMEOUT_MS}). Uses the configured shell when set; otherwise uses /bin/sh on POSIX and COMSPEC or cmd.exe on Windows.`,
+          description: `Execute one shell command string with the host user's filesystem, process, and network authority. The active Location is the default working directory. Relative workdir values resolve from that Location. External workdir values require external_directory approval; best-effort command-argument path warnings are advisory only. Timeout values are milliseconds (default: ${DEFAULT_TIMEOUT_MS}; maximum: ${MAX_TIMEOUT_MS}). Uses the configured shell when set; otherwise uses /bin/sh on POSIX and COMSPEC or cmd.exe on Windows. With background=true the command runs as a background job: this call returns immediately with the job id, the same permission approval applies, the job is observable through job_get/job_wait and stoppable through job_cancel, and a completion note is delivered to the session when the job finishes.`,
           input: Input,
           output: Output,
           structured: StructuredOutput,
@@ -114,11 +128,15 @@ const layer = Layer.effectDiscard(
             truncated: output.truncated,
             ...(output.exit === undefined ? {} : { exit: output.exit }),
             ...(output.timeout === undefined ? {} : { timeout: output.timeout }),
+            ...(output.job === undefined ? {} : { job: output.job }),
           }),
-          toModelOutput: ({ output }) => [
-            { type: "text", text: output.output },
-            { type: "text", text: modelOutput(output) },
-          ],
+          toModelOutput: ({ output }) =>
+            output.job
+              ? [{ type: "text" as const, text: output.output }]
+              : [
+                  { type: "text" as const, text: output.output },
+                  { type: "text" as const, text: modelOutput(output) },
+                ],
           execute: (input, context) =>
             Effect.gen(function* () {
               const source = {
@@ -163,7 +181,7 @@ const layer = Layer.effectDiscard(
                 forceKillAfter: Duration.seconds(3),
               })
               const timeout = input.timeout ?? DEFAULT_TIMEOUT_MS
-              const result = yield* appProcess
+              const processResult = appProcess
                 .run(command, {
                   combineOutput: true,
                   timeout: Duration.millis(timeout),
@@ -174,6 +192,40 @@ const layer = Layer.effectDiscard(
                     isTimeout(error) ? Effect.succeed(undefined) : Effect.fail(error),
                   ),
                 )
+
+              if (input.background) {
+                const info = yield* JobTool.launch({
+                  jobs,
+                  db: database.db,
+                  events,
+                  scope,
+                  type: name,
+                  sessionID: context.sessionID,
+                  agent: context.agent,
+                  assistantMessageID: context.assistantMessageID,
+                  toolCallID: context.toolCallID,
+                  command: input.command,
+                  directory: target.canonical,
+                  run: processResult.pipe(
+                    Effect.map((result) => {
+                      if (!result) return `Command exceeded timeout of ${timeout} ms.`
+                      const output = result.output?.toString("utf8") || "(no output)"
+                      const notice = result.outputTruncated
+                        ? "\n\n[output capture truncated at the in-memory safety limit]"
+                        : ""
+                      return `${output}${notice}\n\nCommand exited with code ${result.exitCode}.`
+                    }),
+                  ),
+                })
+                return {
+                  output: `Background job ${info.id} started for: ${input.command}\n\nTrack with ${JobTool.GET_NAME} or ${JobTool.WAIT_NAME}, cancel with ${JobTool.CANCEL_NAME}. A completion note is delivered to the session when the job finishes.`,
+                  truncated: false,
+                  job: info.id,
+                  ...(warnings.length ? { warnings } : {}),
+                }
+              }
+
+              const result = yield* processResult
               if (!result) {
                 return {
                   output: `Command exceeded timeout of ${timeout} ms. Retry with a larger timeout if the command is expected to take longer.`,
@@ -203,5 +255,15 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/bash",
   layer,
-  deps: [ToolRegistry.node, LocationMutation.node, FSUtil.node, AppProcess.node, Config.node, PermissionV2.node],
+  deps: [
+    ToolRegistry.node,
+    LocationMutation.node,
+    FSUtil.node,
+    AppProcess.node,
+    Config.node,
+    PermissionV2.node,
+    BackgroundJob.node,
+    Database.node,
+    EventV2.node,
+  ],
 })

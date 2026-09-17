@@ -55,9 +55,12 @@ Next reviewed slices:
   route coverage (`v2.session.history.cursor`, `v2.session.events.cursor`) and the consumer
   contract docs — see `specs/v2/session-event-cursor.md`. Remaining adoption slice:
   wire app/desktop sync to resume from cursors (depends on New Data Mode)
-- integrate the new BackgroundJob service with V2 tool execution: support background
-  bash jobs and background agent dispatch with durable status observation,
-  completion delivery, and explicit cancellation / continuation semantics
+- ~~integrate the new BackgroundJob service with V2 tool execution~~ **done** (arena/01a0b0bc):
+  model-facing bash `background: true` launch through the process-local registry, owner-bound
+  `job_get`/`job_wait`/`job_cancel` tools, and durable queue-delivery completion notes into the
+  session inbox — see `specs/v2/background-jobs.md`. Remaining slices tracked there: durable
+  status/restart recovery + HTTP observation (gates 1/3), auto-resume on completion (awaits the
+  continuation-recovery slice below), and background agent dispatch (needs a V2 task tool port)
 - add durable/clustered interruption, retries, and stale-owner fencing only as
   their slices become concrete
 
