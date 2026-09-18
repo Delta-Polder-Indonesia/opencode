@@ -100,6 +100,28 @@ background-job.ts` yang hanya butuh `Database.Service`.
    `specs/v2/todo.md` (entri done). HTTP mutation (cancel via API) kini
    tidak diblokir oleh fencing.
 
+8. **Kecepatan test suite core** — branch `arena/01a0b1e7-opencode`.
+   Profil + optimasi tanpa spek formal (keputusan user). Wall clock
+   `bun test` di `packages/core`: **38.8s → ~26.5s** (1140 tes, 0 gagal).
+   Temuan: ~22s dari 38s terkonsentrasi di ±15 tes; penyebab utama
+   adalah boot subprocess pada tes flock (16 proses bun × ~570ms di 2 core).
+   Perubahan (semua di sisi tes/script, tanpa perubahan runtime):
+   - `test/fixture/effect-flock-worker.ts`: pakai `LayerNode.compile`
+     langsung, bukan `AppNodeBuilder.build` (yang menarik seluruh graf
+     location-services) → boot worker 570ms → 270ms.
+   - Tes contention flock/effect-flock: 16 → 8 worker; tes `util.flock`
+     memakai `baseDelayMs`/`maxDelayMs` ketat dan `staleMs` lebih kecil
+     di tes yang menguji pemulihan, bukan pacing retry.
+     `effect-flock.test.ts` 9.5s → 3.3s; `flock.test.ts` 5.7s → 2.2s.
+   - `script/migration.ts --check`: dua run drizzle-kit (diff incremental
+     + dump full schema) independen, kini dijalankan paralel → 3.4s → 2.0s.
+   Sisa yang sengaja TIDAK diubah: `WebFetchTool` "conversion throws"
+   (1.4s — butuh stack overflow nyata via turndown, bergantung kedalaman),
+   `ModelsDev` "swallows HTTP errors" (0.7s — backoff nyata `retryTransient`
+   200ms+340ms; butuh jadwal retry injectable untuk dipercepat), tiga tes
+   negatif `Watcher` (masing-masing 500ms `noUpdate`), dan fast-check
+   `Config` v1→v2 (100 run, 0.6s).
+
 ## Yang BELUM selesai (antrian sesi berikutnya, urutan prioritas user)
 
 4-lanjut. **Sisa item #4** — urutannya:
@@ -110,7 +132,9 @@ penuh — provider-attempt preparation vs dispatch ambiguity, keputusan
 eksplisit `retry`/`abandon`, bounded automatic retry, budget/backoff,
 status pemulihan yang terlihat, dan startup discovery.
 b. **Stale-owner fencing / clustered execution** — DONE (lihat #7).
-c. **Kecepatan test suite** — `specs/perf/test-suite.md`; belum mulai. 5. Pinggir lain (bukan prioritas user, tercatat di dokumen fase): adopsi
+c. **Kecepatan test suite** — DONE tahap pertama (lihat #8; 38.8s → ~26.5s).
+Kandidat lanjutan bila diperlukan: jadwal retry injectable di `ModelsDev`,
+`noUpdate` watcher lebih pendek. 5. Pinggir lain (bukan prioritas user, tercatat di dokumen fase): adopsi
 cursor di app/desktop sync (menunggu "New Data Mode"); background agent
 dispatch (`job_*` dispatch-ready, tapi tool `task`/sub-agent V2 belum ada
 di core — port dulu dari package app).
@@ -145,7 +169,7 @@ config.json` sebagai efek samping — hapus, jangan dicommit.
 ```bash
 cd /home/user/opencode
 npm install -g bun 2>/dev/null; NODE_TLS_REJECT_UNAUTHORIZED=0 bun install
-cd packages/core && bun test && bun run typecheck      # ~35s + ~10s
+cd packages/core && bun test && bun run typecheck      # ~27s + ~10s
 cd ../opencode && bun run script/httpapi-exercise.ts --mode coverage \
   --fail-on-missing --fail-on-skip                     # 214 skenario
 ```
