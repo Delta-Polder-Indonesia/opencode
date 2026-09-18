@@ -56,3 +56,18 @@ describe("describeError", () => {
     expect(describeError(42)).toBe("42")
   })
 })
+
+// Solid's `render` appends to the container rather than replacing it, so a
+// notice shown while waiting stayed pinned above the interface once the app
+// finally mounted. Clearing is what makes the handoff clean.
+describe("clearing before mount", () => {
+  test("removes a previously rendered notice", () => {
+    const element = root()
+    renderFatal(element, { title: "Starting the local backend" })
+    expect(element.textContent).toContain("Starting the local backend")
+
+    element.textContent = ""
+    expect(element.textContent).toBe("")
+    expect(element.querySelector("[role=alert]")).toBeNull()
+  })
+})

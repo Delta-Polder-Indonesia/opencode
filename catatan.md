@@ -695,6 +695,28 @@ pada modul hasil build yang disalin ke lokasi lain dan dijalankan dengan cwd
 berbeda: `mainBundleDir` mengikuti lokasi bundel (`/tmp/evalprobe/moved/dist/main`),
 bukan cwd.
 
+#### 2026-09-19 — UI Electron akhirnya tampil
+
+Preload termuat, bridge tersedia, dan **antarmuka OpenCode akhirnya ter-render di
+dalam Electron** — tonggak utama Tahap 1A/1B tercapai. Backend juga jelas sehat,
+karena UI hanya di-mount setelah backend melaporkan sehat.
+
+Dua cacat tersisa, keduanya milik kode diagnostik yang saya tambahkan sendiri:
+
+**1. Panel tertinggal di atas UI.** `renderFatal()` mengosongkan root, tetapi
+`render()` milik Solid **menambahkan**, bukan mengganti. Jadi begitu backend
+akhirnya siap, pemberitahuan tunggu tetap menempel di atas antarmuka. Kini root
+dibersihkan sebelum mount bila pemberitahuan sempat tampil.
+
+**2. Ambang 10 detik terlalu agresif dan pesannya menakutkan.** Peluncuran
+pertama backend hasil kompilasi memang lambat di Windows: executable ~100MB dan
+antivirus memindainya sebelum boleh berjalan. Ambang dinaikkan ke 25 detik, dan
+teksnya diubah dari "Waiting for the backend" yang terbaca seperti kegagalan
+menjadi penjelasan bahwa ini normal pada peluncuran pertama.
+
+Verifikasi: `bun test src` **99 pass / 0 fail** (1 tes regresi untuk pembersihan
+sebelum mount), build bundel sukses, oxlint dan prettier bersih.
+
 **Langkah berikutnya**
 
 1. Kompilasi backend untuk `windows-x64` dan uji `script/backend.ts --target windows-x64`.

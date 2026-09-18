@@ -11,7 +11,15 @@ import { createDesktopPlatform, desktopBridge } from "./platform"
 import { backendUsable, MISSING_BRIDGE_DIAGNOSTIC, serverConnection, waitForBackend } from "./bootstrap"
 import { describeError, renderFatal } from "./fatal"
 
-const BACKEND_WAIT_HINT_MS = 10_000
+/**
+ * How long to wait before explaining the delay.
+ *
+ * The first launch of the compiled backend is genuinely slow on Windows -- it
+ * is a ~100MB executable and the antivirus scans it before it may run -- so a
+ * ten second threshold fired on a perfectly healthy startup. This only needs to
+ * beat the 60s startup timeout by enough to be useful.
+ */
+const BACKEND_WAIT_HINT_MS = 25_000
 
 async function start(root: HTMLElement) {
   const bridge = desktopBridge()
@@ -29,11 +37,14 @@ async function start(root: HTMLElement) {
 
   // Waiting on the backend can legitimately take a while, but an indefinite
   // blank window is indistinguishable from a hang, so say what we are waiting on.
+  let hintShown = false
   const hintTimer = setTimeout(() => {
+    hintShown = true
     renderFatal(root, {
-      title: "Waiting for the backend",
-      detail: "The desktop shell is still waiting for the local backend to report healthy.",
-      hint: "Startup gives up after 60s and shows an error. Check the main-process log for details.",
+      title: "Starting the local backend",
+      detail:
+        "This is normal on a first launch: the backend is a large executable and Windows scans it before it runs.",
+      hint: "The interface appears as soon as it reports healthy. If it has not by 60s, an error is shown instead.",
     })
   }, BACKEND_WAIT_HINT_MS)
 
@@ -46,6 +57,9 @@ async function start(root: HTMLElement) {
     info = await bridge.info()
   } finally {
     clearTimeout(hintTimer)
+    // Solid's `render` appends, so the waiting notice would otherwise stay
+    // pinned above the interface once the backend finally arrives.
+    if (hintShown) root.textContent = ""
   }
 
   if (!info) {
