@@ -177,7 +177,9 @@ function Wait-ForHealth([int]$ProbePort, [string]$BasicAuth, [int]$TimeoutSecond
 
 # Cari cara menjalankan Vite: shim di node_modules\.bin (bun/npm membuat
 # vite.cmd atau vite.exe di Windows), kalau tidak ada pakai `bun x vite`.
-# Mengembalikan array: [0] = perintah, sisanya = argumen awal.
+# Mengembalikan objek { File, Args } — objek dipakai supaya PowerShell tidak
+# meratakan array satu elemen menjadi string (kalau itu terjadi, Index [0] akan
+# mengambil huruf pertama path, mis. "D" dari "D:\...").
 function Resolve-ViteCommand([string]$RepoRoot) {
   $binNames = @("vite.cmd", "vite.exe", "vite.ps1", "vite")
   $binDirs = @(
@@ -187,11 +189,13 @@ function Resolve-ViteCommand([string]$RepoRoot) {
   foreach ($dir in $binDirs) {
     foreach ($name in $binNames) {
       $candidate = Join-Path $dir $name
-      if (Test-Path $candidate) { return @($candidate) }
+      if (Test-Path $candidate) { return [pscustomobject]@{ File = $candidate; Args = @() } }
     }
   }
-  if (Get-Command bun -ErrorAction SilentlyContinue) { return @("bun", "x", "vite") }
-  return @()
+  if (Get-Command bun -ErrorAction SilentlyContinue) {
+    return [pscustomobject]@{ File = "bun"; Args = @("x", "vite") }
+  }
+  return [pscustomobject]@{ File = $null; Args = @() }
 }
 
 if ($Verify) {
@@ -255,10 +259,10 @@ if ($binary.Source -match '\.ps1$') {
 # Start-Process butuh path lengkap; nama telanjang tidak selalu bisa ditemukan.
 $launcherPath = if ($binary.Source) { $binary.Source } else { $launcher }
 
-$viteCommand = @()
+$viteCommand = $null
 if ($WithDevUi) {
   $viteCommand = Resolve-ViteCommand $repoRoot
-  if ($viteCommand.Count -eq 0) {
+  if (-not $viteCommand.File) {
     Write-Head "Dependensi belum terpasang (Vite tidak ditemukan)"
     Write-Note "Jalankan dulu di root repo:  bun install"
     Write-Note "Lalu ulangi perintah ini."
@@ -372,9 +376,8 @@ try {
   Write-Note "Kalau port $DevUiPort sedang dipakai, pakai -DevUiPort <lain>, mis. -DevUiPort 3001"
   Write-Host ""
 
-  $viteExe = $viteCommand[0]
-  $viteArgs = @()
-  if ($viteCommand.Count -gt 1) { $viteArgs = $viteCommand[1..($viteCommand.Count - 1)] }
+  $viteExe = $viteCommand.File
+  $viteArgs = @($viteCommand.Args)
 
   Push-Location (Join-Path $repoRoot "packages\app")
   try {
