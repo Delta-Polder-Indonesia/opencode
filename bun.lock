@@ -234,6 +234,7 @@
         "zod": "catalog:",
       },
       "devDependencies": {
+        "@happy-dom/global-registrator": "20.12.0",
         "@tsconfig/node22": "catalog:",
         "@types/bun": "catalog:",
         "@types/node": "catalog:",

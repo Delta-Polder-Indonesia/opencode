@@ -278,9 +278,25 @@ di-cache. Batas tunggu launcher kini 5 menit agar tidak menyerah lebih dulu.
 
 **Jendela terbuka tapi putih/kosong**
 
-Vite belum siap. Lihat output terminal; harusnya ada `127.0.0.1:4455`. Kalau port
-4455 dipakai aplikasi lain, `strictPort` membuatnya gagal — tutup aplikasi
-tersebut atau set `OPENCODE_DESKTOP_RENDERER_URL`.
+Sudah diperbaiki sebagian: `git pull` lalu ulangi. Sebelumnya beberapa jalur
+kegagalan berakhir dengan dokumen kosong tanpa jejak apa pun. Sekarang jendela
+akan menampilkan panel berisi alasannya, dan error renderer juga ditulis ke log
+main process.
+
+Kalau masih putih, jalankan dengan DevTools terbuka untuk melihat error aslinya:
+
+```powershell
+$env:OPENCODE_DESKTOP_DEVTOOLS="1"
+bun run dev
+```
+
+Lihat juga berkas log; jalurnya dicetak saat startup, biasanya:
+
+```
+%APPDATA%\OpenCode\desktop.log
+```
+
+Baris berawalan `[renderer]` adalah error dari dalam UI.
 
 **Aplikasi menggantung di layar loading**
 

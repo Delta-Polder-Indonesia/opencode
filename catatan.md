@@ -569,6 +569,43 @@ Catatan lingkungan: build memerlukan `https://models.dev/api.json`, yang dibloki
 di sandbox; dilewati dengan `MODELS_DEV_API_JSON`. `bun install` juga perlu
 `NODE_EXTRA_CA_CERTS`. Keduanya kendala sandbox, bukan cacat kode.
 
+#### 2026-09-19 — Jendela Electron terbuka; layar putih dibuat terdiagnosis
+
+Uji coba Windows ketiga: build backend lolos dan **jendela Electron akhirnya
+terbuka** — tonggak pertama yang selama ini terhalang. Isinya putih kosong.
+
+**Akar masalah: kegagalan yang tidak terlihat.** `entry.tsx` punya beberapa
+`return` awal (bridge preload tidak ada, `info()` mengembalikan undefined) yang
+hanya menulis ke `console.error` lalu berhenti. DevTools tertutup secara default
+dan console renderer tidak masuk log main process, jadi setiap jalur itu berakhir
+sebagai jendela putih tanpa jejak. Tidak ada pula `.catch()` pada `start()`,
+sehingga promise yang reject menghasilkan hasil yang sama persis. Layar putih
+adalah mode kegagalan terburuk untuk aplikasi desktop karena tidak bisa dibedakan
+dari hang.
+
+Perbaikan — tiga lapis, agar tidak ada lagi kegagalan senyap:
+
+1. `src/renderer/fatal.ts`: panel diagnostik tanpa dependensi menggantikan
+   dokumen kosong. Sengaja tidak memakai UI bersama maupun i18n, karena justru
+   keduanya yang mungkin gagal dimuat; teksnya diagnostik untuk pengembang, bukan
+   copy produk. Memakai `textContent`, jadi keluaran server yang dikutip tidak
+   pernah menjadi node hidup (ada tesnya).
+2. `entry.tsx`: setiap `return` awal kini melaporkan alasannya, `start()`
+   dibungkus `.catch()`, dan ada petunjuk setelah 10 detik menunggu backend
+   supaya penantian panjang tidak tampak seperti hang.
+3. `src/main/index.ts`: `console-message` renderer dicerminkan ke log main
+   process (lewat `log.write`, jadi tetap teredaksi), `preload-error` dicatat
+   karena crash preload hanya tampak sebagai "bridge unavailable" di sisi
+   renderer, dan DevTools kini bisa dinyalakan lewat `OPENCODE_DESKTOP_DEVTOOLS=1`.
+
+Verifikasi: `bun test src` **90 pass / 0 fail** (6 tes baru termasuk uji escaping
+markup), build renderer produksi sukses dengan aset berpath relatif (syarat
+`file://`), oxlint dan prettier bersih.
+
+Catatan: perbaikan ini membuat penyebab layar putih **terlihat**, belum tentu
+menghapusnya. Penyebab persisnya di mesin pengguna masih perlu dipastikan dari
+pesan yang kini muncul.
+
 **Langkah berikutnya**
 
 1. Kompilasi backend untuk `windows-x64` dan uji `script/backend.ts --target windows-x64`.

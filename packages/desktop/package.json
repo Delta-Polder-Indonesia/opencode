@@ -17,6 +17,7 @@
     "package:win": "bun run script/backend.ts --target windows-x64 && bun run script/build.ts && electron-builder --win --x64"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "20.12.0",
     "@tsconfig/node22": "catalog:",
     "@types/bun": "catalog:",
     "@types/node": "catalog:",

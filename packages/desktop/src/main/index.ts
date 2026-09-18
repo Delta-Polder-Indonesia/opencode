@@ -251,6 +251,28 @@ async function createWindow() {
     log.error(`renderer failed to load code=${code} description=${description} url=${url}`)
   })
 
+  // Without this, a renderer exception leaves a blank window and the reason is
+  // only visible in devtools, which are closed by default. Mirror it into the
+  // main-process log so a bug report has something to go on.
+  window.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    // 0=verbose 1=info 2=warning 3=error; only surface the actionable ones.
+    if (level < 2) return
+    const where = sourceId ? ` (${sourceId}:${line})` : ""
+    // `log.write` redacts, so credentials in a renderer log are not leaked here.
+    log.write(level >= 3 ? "error" : "warn", `[renderer] ${message}${where}`)
+  })
+
+  window.webContents.on("preload-error", (_event, preloadPath, error) => {
+    // A preload crash means no bridge, which the renderer can only report as a
+    // generic "bridge unavailable"; the real cause is here.
+    log.error(`preload script failed at ${preloadPath}: ${error.message}`)
+  })
+
+  // Devtools are opt-in: OPENCODE_DESKTOP_DEVTOOLS=1 bun run dev
+  if (IS_DEV && process.env.OPENCODE_DESKTOP_DEVTOOLS === "1") {
+    window.webContents.openDevTools({ mode: "detach" })
+  }
+
   window.once("ready-to-show", () => window.show())
 
   const entry = rendererEntry()
