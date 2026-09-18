@@ -413,7 +413,25 @@ Test-Case "-WithDevUi: tunggu server siap, jalankan Vite dengan --host 127.0.0.1
     }
     if (-not (Test-Path $marker)) {
       $captured = ((Get-Content $outFile -Raw -ErrorAction SilentlyContinue) + "`n" + (Get-Content $errFile -Raw -ErrorAction SilentlyContinue))
-      throw "shim Vite belum dijalankan setelah 150 detik.`n$captured"
+
+      # Uji shim-nya langsung: kalau pun dijalankan manual tidak menulis marker,
+      # berarti masalahnya di shim, bukan di dev-safe.ps1.
+      $stubProbe = "belum diuji"
+      try {
+        $probe = Start-Process -FilePath "cmd.exe" -PassThru -WindowStyle Hidden `
+          -ArgumentList @("/c", (Quote-Arg $shim), "--host", "127.0.0.1", "--port", "$devUiPort")
+        Start-Sleep -Seconds 3
+        $madeMarker = Test-Path $marker
+        & taskkill /PID $probe.Id /T /F 2>&1 | Out-Null
+        Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue
+        $stubProbe = if ($madeMarker) { "shim jalan sendiri dan MENULIS marker (berarti masalah di dev-safe.ps1)" } else { "shim TIDAK menulis marker walau dijalankan langsung (masalah di shim)" }
+      } catch {
+        $stubProbe = "gagal menguji shim langsung: $($_.Exception.Message)"
+      }
+
+      $tail = $captured
+      if ($tail.Length -gt 1200) { $tail = "...(dipotong)...`n" + $tail.Substring($tail.Length - 1200) }
+      throw "shim Vite tidak dijalankan setelah 150 detik.`nprobe shim: $stubProbe`nshim: $shim (ada: $(Test-Path $shim))`nmarker: $marker`nekor keluaran:`n$tail"
     }
 
     $markerText = (Get-Content $marker -Raw).Trim()
@@ -509,10 +527,20 @@ if ($failed -gt 0) {
 
   if ($env:GITHUB_ACTIONS -eq "true") {
     foreach ($item in ($script:results | Where-Object Status -eq "FAIL")) {
-      # Anotasi hanya satu baris; baris baru diganti supaya tidak terpotong.
+      # Anotasi hanya satu baris dan ada batas panjang, jadi detail panjang
+      # dipecah menjadi beberapa anotasi supaya semuanya terlihat di halaman run.
       $message = (($item.Name + " - " + $item.Detail) -replace "\r?\n", " | ").Trim()
-      if ($message.Length -gt 900) { $message = $message.Substring(0, 900) + " ... (lihat ringkasan step)" }
-      Write-Host "::error title=dev-safe gagal::$message"
+      $size = 800
+      $total = [Math]::Ceiling($message.Length / $size)
+      if ($total -lt 1) { $total = 1 }
+      if ($total -gt 6) { $total = 6 }
+      for ($i = 0; $i -lt $total; $i++) {
+        $start = $i * $size
+        $length = [Math]::Min($size, $message.Length - $start)
+        if ($length -le 0) { break }
+        $part = $message.Substring($start, $length)
+        Write-Host "::error title=dev-safe gagal ($($i + 1)/$total)::$part"
+      }
     }
   }
   exit 1
