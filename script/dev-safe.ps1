@@ -37,6 +37,9 @@ param(
   [string[]]$Cors = @(),
   # Jangan jalankan server, hanya periksa server yang sedang berjalan.
   [switch]$Verify,
+  # Jangan pernah bertanya; kalau password tidak ada, langsung gagal (untuk CI,
+  # scheduled task, atau perintah otomatis lain yang tidak punya terminal).
+  [switch]$NonInteractive,
   # Biarkan OPENCODE_SERVER_PASSWORD tetap ada setelah script selesai.
   [switch]$KeepPasswordEnv,
   # Path ke binary opencode kalau tidak ada di PATH.
@@ -109,14 +112,14 @@ function Get-HttpStatus([string]$Url, [string]$BasicAuth) {
     if ($_.Exception.Response) { return [string][int]$_.Exception.Response.StatusCode }
   }
 
-  # Cadangan: curl.exe (juga untuk server yang menolak koneksi).
+  # Cadangan: curl.exe, dengan batas waktu supaya tidak menggantung.
   $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
   if ($curl) {
     $code = ""
     if ($BasicAuth) {
-      $code = (& curl.exe -s -o NUL -w "%{http_code}" -u $BasicAuth $Url).Trim()
+      $code = (& curl.exe -s --max-time 5 -o NUL -w "%{http_code}" -u $BasicAuth $Url).Trim()
     } else {
-      $code = (& curl.exe -s -o NUL -w "%{http_code}" $Url).Trim()
+      $code = (& curl.exe -s --max-time 5 -o NUL -w "%{http_code}" $Url).Trim()
     }
     if ($code -and $code -ne "000") { return $code }
   }
@@ -268,6 +271,10 @@ if ($password) {
   Write-Head "Password"
   Write-Note "Memakai OPENCODE_SERVER_PASSWORD yang sudah ada di sesi ini."
   $passwordFromEnv = $true
+} elseif ($NonInteractive) {
+  Write-Bad "OPENCODE_SERVER_PASSWORD tidak diset dan -NonInteractive aktif."
+  Write-Note "Set password-nya dulu, contoh: `$env:OPENCODE_SERVER_PASSWORD = 'rahasia'"
+  exit 1
 } else {
   Write-Head "Password (tidak terlihat saat diketik)"
   Write-Note "Password ini melindungi API opencode. Tanpanya, siapa pun yang bisa"

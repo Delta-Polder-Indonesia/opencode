@@ -1,0 +1,100 @@
+name: dev-safe (Windows)
+
+# Uji alat bantu dev untuk Windows: script/dev-safe.ps1 + script/dev-safe.cmd.
+# Hasilnya tampil sebagai tabel di halaman run (step summary) dan sebagai
+# anotasi error kalau ada yang gagal.
+#
+# Jalankan manual dari tab Actions ("Run workflow"), atau otomatis setiap kali
+# file di bawah ini berubah.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_e2e:
+        description: "Sekalian uji server opencode sungguhan (unduh dari npm, lebih lama)"
+        type: boolean
+        default: true
+  push:
+    paths:
+      - "script/dev-safe.ps1"
+      - "script/dev-safe.cmd"
+      - "script/dev-safe.tests.ps1"
+      - ".github/workflows/dev-safe-windows.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-safe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Uji di Windows
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Info lingkungan
+        run: |
+          Write-Host "Runner   : $env:RUNNER_OS $env:RUNNER_ARCH"
+          Write-Host "PowerShell: $($PSVersionTable.PSVersion)"
+          Write-Host "pwsh     : $((Get-Command pwsh).Source)"
+
+      - name: Cek sintaks PowerShell (parser asli)
+        run: |
+          $files = @("script/dev-safe.ps1", "script/dev-safe.tests.ps1")
+          $failed = $false
+          foreach ($file in $files) {
+            $parseErrors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$parseErrors)
+            if ($parseErrors.Count -gt 0) {
+              $failed = $true
+              foreach ($error in $parseErrors) {
+                Write-Host "::error file=$file,line=$($error.Extent.StartLineNumber)::$($error.Message)"
+              }
+            } else {
+              Write-Host "Sintaks OK: $file"
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Pasang opencode dari npm
+        id: install
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_e2e }}
+        run: |
+          npm install -g opencode-ai@latest
+          $command = Get-Command opencode -ErrorAction SilentlyContinue
+          if (-not $command) { throw "opencode tidak ada di PATH setelah npm install -g" }
+          Write-Host "opencode: $($command.Source)"
+          "opencode_path=$($command.Source)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Uji perilaku dev-safe.ps1
+        id: tests
+        env:
+          INCLUDE_E2E: ${{ github.event_name != 'workflow_dispatch' || inputs.run_e2e }}
+        run: |
+          $arguments = @("-NoProfile", "-File", "script/dev-safe.tests.ps1")
+          if ($env:INCLUDE_E2E -eq "true") { $arguments += "-IncludeE2E" }
+          $opencodePath = "${{ steps.install.outputs.opencode_path }}"
+          if ($opencodePath) { $arguments += @("-Opencode", $opencodePath) }
+          Write-Host "Menjalankan: pwsh $($arguments -join ' ')"
+          & pwsh @arguments
+          exit $LASTEXITCODE
+
+      - name: Ringkasan hasil
+        if: always()
+        run: |
+          $summary = $env:GITHUB_STEP_SUMMARY
+          Add-Content -Path $summary -Value ""
+          Add-Content -Path $summary -Value "Perintah untuk mencoba sendiri di Windows:"
+          Add-Content -Path $summary -Value '```powershell'
+          Add-Content -Path $summary -Value "powershell -ExecutionPolicy Bypass -File .\script\dev-safe.ps1 -WithDevUi"
+          Add-Content -Path $summary -Value "powershell -ExecutionPolicy Bypass -File .\script\dev-safe.ps1 -Verify"
+          Add-Content -Path $summary -Value "pwsh -NoProfile -File .\script\dev-safe.tests.ps1"
+          Add-Content -Path $summary -Value '```'
