@@ -65,6 +65,7 @@ import { partDefaultOpen } from "./part-default-open"
 import { animate } from "motion"
 import { attached, inline, kind, typeLabel } from "./message-file"
 import { readPartText } from "./message-part-text"
+import { createReasoningDisclosure } from "./reasoning-disclosure"
 import { SessionProgressIndicatorV2 } from "../v2/components/session-progress-indicator-v2"
 
 async function writeClipboard(text: string): Promise<boolean> {
@@ -1758,16 +1759,33 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
 
 PART_MAPPING["reasoning"] = function ReasoningPartDisplay(props) {
   const data = useData()
+  const i18n = useI18n()
   const part = () => props.part as ReasoningPart
   const streaming = createMemo(
-    () => props.message.role === "assistant" && typeof (props.message as AssistantMessage).time.completed !== "number",
+    () =>
+      props.message.role === "assistant" &&
+      typeof (props.message as AssistantMessage).time.completed !== "number" &&
+      typeof part().time.end !== "number",
   )
+  const disclosure = createReasoningDisclosure(streaming)
   const text = () => readPartText(data.store.part_text_accum_delta, part())
 
   return (
     <Show when={text()}>
       <div data-component="reasoning-part" data-timeline-part-id={part().id}>
-        <PacedMarkdown text={text()} cacheKey={part().id} streaming={streaming()} />
+        <Collapsible open={disclosure.open()} onOpenChange={disclosure.setOpen}>
+          <Collapsible.Trigger>
+            <TextShimmer text={i18n.t("ui.sessionTurn.status.thinking")} active={streaming()} />
+            <Collapsible.Arrow />
+          </Collapsible.Trigger>
+          <Collapsible.Content>
+            <Show when={disclosure.open()}>
+              <div data-slot="reasoning-part-body">
+                <PacedMarkdown text={text()} cacheKey={part().id} streaming={streaming()} />
+              </div>
+            </Show>
+          </Collapsible.Content>
+        </Collapsible>
       </div>
     </Show>
   )

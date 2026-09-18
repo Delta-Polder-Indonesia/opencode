@@ -1,3 +1,233 @@
+# Perencanaan Pengembangan Desktop AI IDE
+
+Tanggal rencana: **19 September 2026**.
+Status: **perencanaan; implementasi Electron belum dimulai**.
+
+## Tujuan
+
+Mengembangkan fork ini menjadi aplikasi desktop AI IDE yang dapat dibuka dari
+ikon aplikasi, tanpa browser terpisah dan tanpa menjalankan server secara manual.
+Pengalaman kerja diarahkan menyerupai Arena: explorer, editor, chat AI yang
+ringkas, terminal, review perubahan, dan preview dalam satu jendela.
+Bukan menyalin seluruh fitur atau tampilan Arena sekaligus.
+
+Pendekatan: gunakan kembali UI, agen AI, terminal, review diff, dan backend yang
+sudah ada. Tambahkan kemampuan desktop dan IDE secara bertahap, dengan pengujian
+serta kriteria kelulusan sebelum melanjutkan tahap berikutnya.
+
+## Kondisi awal dan batasan
+
+- Audit awal dilakukan melalui pembacaan kode, bukan pengujian aplikasi menyeluruh.
+- UI tersedia di `packages/app`, komponen sesi di `packages/session-ui`.
+- `packages/app/src/context/platform.tsx` sudah menyediakan kontrak integrasi
+  desktop (dialog folder, menu, notifikasi, penyimpanan, updater, dan lainnya).
+  Kontrak ini belum berarti implementasi Electron tersedia.
+- Paket `packages/desktop` tidak ditemukan pada checkout yang diaudit. Tautan
+  desktop upstream dalam README bukan installer untuk fork ini.
+- `packages/opencode/script/build.ts` memiliki jalur build binary dan embedding
+  UI web; kelayakan bundling sebagai backend desktop harus diuji.
+- Terminal, file viewer, review diff, infrastruktur LSP, dan backend background
+  job sudah ada. Editor manual lengkap dan integrasi IDE lanjutan masih perlu
+  dibangun atau diverifikasi lebih lanjut sebelum implementasi.
+- Perubahan folder picker dan thinking ringkas sudah dibuat dalam sesi ini,
+  tetapi belum lolos pengujian runtime. Jangan tandai sebagai fitur rilis selesai.
+- Pada saat rencana ditulis, Bun dan dependensi belum tersedia di lingkungan
+  kerja; typecheck, tes runtime, dan benchmark belum dapat dijalankan.
+- Target distribusi awal yang diusulkan: **Windows x64**. Konfirmasikan OS dan
+  arsitektur perangkat pengguna sebelum menetapkan konfigurasi installer.
+- Aplikasi mandiri tidak berarti seluruh pekerjaan offline. Provider AI cloud
+  membutuhkan internet; model lokal membutuhkan konfigurasi dan perangkat yang
+  memadai. Proyek pengguna tetap bisa membutuhkan Git, Node.js, Python, compiler,
+  atau toolchain lainnya.
+
+## Aturan pengerjaan dan pencatatan
+
+1. Kerjakan satu sub-tahap kecil, lalu periksa hasilnya sebelum memperluas cakupan.
+2. Jangan merusak mode web, koneksi server remote, atau fungsi AI yang sudah ada.
+3. Ikuti `AGENTS.md` pada paket terkait. Untuk perubahan timeline/session,
+   catat baseline benchmark production dan bandingkan setelah perubahan.
+4. Checklist hanya dicentang setelah pekerjaan dan verifikasinya benar-benar
+   selesai. Jika terhalang lingkungan, tulis **terblokir**, bukan **lulus**.
+5. Simpan bukti per tahap: file yang berubah, perintah tes, hasil, kendala,
+   keputusan teknis, serta pekerjaan berikutnya.
+6. Jangan masukkan token, password, API key, installer besar, atau hasil build
+   ke Git. Gunakan penyimpanan artefak rilis untuk distribusi.
+7. Jangan menyatakan siap rilis hanya karena jendela Electron berhasil terbuka.
+
+## Tahap 0 — Persiapan dan baseline
+
+- [ ] Konfirmasikan target OS/arsitektur pertama dan kebutuhan penggunaan lokal/remote.
+- [ ] Siapkan Bun sesuai versi proyek serta instal dependensi.
+- [ ] Jalankan baseline typecheck dan tes paket terkait; pisahkan kegagalan lama
+      dari regresi baru.
+- [ ] Jalankan aplikasi untuk memverifikasi alur proyek, sesi, terminal, dan diff.
+- [ ] Verifikasi perubahan folder picker dan thinking ringkas, termasuk pengguna
+      web, desktop lokal, server remote, dan membuka ulang reasoning lama.
+- [ ] Catat benchmark production sebelum perubahan session/timeline berikutnya.
+- [ ] Pastikan strategi build UI/backend dan kebutuhan aset/native dependency
+      dapat dipenuhi pada target Windows.
+
+**Kriteria selesai:** lingkungan pengembangan dapat menjalankan aplikasi dan tes;
+status baseline serta kendala terdokumentasi. Jika pengujian Windows belum
+tersedia, jangan menganggap build desktop Windows telah tervalidasi.
+
+## Tahap 1 — Aplikasi desktop mandiri dengan Electron
+
+### 1A. Kerangka dan integrasi UI
+
+- [ ] Buat `packages/desktop` dengan main process, preload, renderer entry,
+      konfigurasi build, serta script pengembangan.
+- [ ] Gunakan kembali UI yang ada melalui `PlatformProvider`; jangan menduplikasi
+      seluruh aplikasi dan jangan hanya membungkus situs upstream.
+- [ ] Implementasikan dialog folder native, menu dasar, membuka tautan eksternal
+      secara aman, dan penyimpanan data aplikasi sesuai lokasi OS.
+- [ ] Pastikan proyek remote tetap menggunakan filesystem server, bukan dialog
+      folder lokal yang menghasilkan path tidak relevan.
+
+### 1B. Backend otomatis dan lifecycle
+
+- [ ] Bundel backend/runtime yang kompatibel; pengguna tidak perlu memasang Bun
+      hanya untuk menjalankan aplikasi desktop.
+- [ ] Jalankan backend lokal otomatis dengan port tersedia, pemeriksaan kesehatan,
+      batas waktu startup, dan penanganan benturan port.
+- [ ] Tampilkan loading, error startup yang dapat dipahami, opsi pemulihan, dan log
+      yang tidak membocorkan kredensial.
+- [ ] Tentukan perilaku single-instance/multi-window serta kepemilikan proses.
+- [ ] Saat aplikasi ditutup, hentikan backend dan proses anak yang dimilikinya
+      dengan benar; jangan menghentikan server eksternal milik pengguna.
+- [ ] Uji pemulihan setelah crash serta persistensi sesi/proyek setelah dibuka ulang.
+
+### 1C. Keamanan
+
+- [ ] Gunakan `nodeIntegration: false`, `contextIsolation: true`, dan sandbox renderer.
+- [ ] Batasi API preload/IPC; validasi pengirim, argumen, path, dan operasi yang diizinkan.
+- [ ] Backend desktop lokal bind hanya ke loopback dengan autentikasi; jangan
+      membuka layanan eksekusi shell ke LAN secara default.
+- [ ] Jangan menaruh token di URL/log; tentukan penyimpanan kredensial aman OS.
+- [ ] Batasi navigasi, pembukaan jendela, origin, dan protokol tautan eksternal.
+- [ ] Pertahankan pemeriksaan izin agen dan pisahkan konten proyek dari API istimewa.
+
+### 1D. Installer dan penerimaan
+
+- [ ] Pilih tooling packaging (misalnya Electron Builder atau Forge) setelah
+      memeriksa kebutuhan native dependency, binary backend, dan lisensinya.
+- [ ] Buat installer Windows x64 yang memuat aset UI lokal dan backend.
+- [ ] Uji install, launch, pilih proyek, chat, terminal, tutup, buka ulang, dan uninstall
+      pada lingkungan Windows yang bersih.
+- [ ] Verifikasi path dengan spasi/non-ASCII, folder tidak bisa diakses, provider
+      offline, backend gagal start, serta tidak ada proses yatim setelah exit.
+- [ ] Dokumentasikan lokasi data, log, cara update awal, dan kebijakan uninstall data.
+- [ ] Sebelum distribusi publik, tentukan code signing, asal artefak, serta proses
+      rilis. Auto-update dapat menyusul, tetapi wajib tervalidasi bila diaktifkan.
+
+**Kriteria selesai:** pengguna memasang aplikasi, membukanya lewat ikon, memilih
+folder, memakai chat AI/terminal/review, lalu menutup dan membuka ulang tanpa
+browser terpisah atau menjalankan server manual. Alur tersebut diuji pada target
+Windows, bukan hanya dari sandbox Linux.
+
+## Tahap 2 — Editor kode dan pengelolaan file
+
+- [ ] Integrasikan Monaco Editor, sambil mempertahankan viewer diff yang sudah ada.
+- [ ] Sediakan tab beberapa file, edit manual, undo/redo, dan simpan `Ctrl+S`.
+- [ ] Tambahkan indikator belum tersimpan serta konfirmasi saat tab/aplikasi ditutup.
+- [ ] Sediakan aksi membuat file/folder, rename, dan hapus dengan konfirmasi.
+- [ ] Sinkronkan perubahan filesystem dengan explorer dan tab terbuka.
+- [ ] Deteksi konflik saat AI/program lain mengubah file yang memiliki edit lokal;
+      jangan menimpa perubahan pengguna secara diam-diam.
+- [ ] Tangani file biner/besar, encoding, line ending, file read-only, dan kegagalan simpan.
+- [ ] Pertahankan operasi filesystem melalui backend yang sesuai agar proyek
+      remote tidak salah menulis ke komputer lokal.
+
+**Kriteria selesai:** pengguna dapat mengedit dan menyimpan kode langsung,
+mengelola file, serta menangani perubahan bersamaan dari AI tanpa kehilangan
+perubahan yang belum disimpan.
+
+## Tahap 3 — Alur kerja terpadu seperti Arena
+
+Susunan awal (dapat disesuaikan setelah pengujian penggunaan):
+
+```text
++---------------------------------------------------------------+
+| Proyek / Tab / Perintah / Pengaturan                           |
++--------------+----------------------------+-------------------+
+| Explorer     | Editor / Diff / Preview    | Chat AI           |
+|              |                            | Thinking ringkas  |
+|              |                            | Jawaban dan aksi  |
++--------------+----------------------------+                   |
+|              | Terminal / Output / Job    |                   |
++--------------+----------------------------+-------------------+
+```
+
+- [ ] Buat panel yang dapat diubah ukurannya/disembunyikan dan simpan preferensinya.
+- [ ] Pastikan thinking ringkas bisa dibuka, otomatis menutup saat selesai, dan
+      dapat dibuka ulang tanpa memenuhi chat secara default.
+- [ ] Permudah navigasi dari jawaban AI ke file dan review perubahan.
+- [ ] Tambahkan panel background job: daftar, status, output, dan pembatalan,
+      dengan batasan otorisasi API yang sudah ada tetap diperhatikan.
+- [ ] Tambahkan pengelolaan proses aplikasi pengguna: start/stop, status, output,
+      dan deteksi/pemilihan port.
+- [ ] Tambahkan live preview web dengan navigasi yang dibatasi dan isolasi dari
+      preload/IPC aplikasi utama; konten proyek tidak boleh mendapat akses Node.
+- [ ] Sediakan fallback membuka preview eksternal jika embedding ditolak aplikasi.
+- [ ] Uji aksesibilitas keyboard, layar kecil, persistensi panel, dan performa sesi panjang.
+
+**Kriteria selesai:** alur meminta AI → memeriksa diff → menjalankan aplikasi →
+mengecek preview → menghentikan proses dapat dilakukan dari satu jendela, dengan
+fallback jelas bila aplikasi yang dipreview tidak mendukung embedding.
+
+## Tahap 4 — Fitur IDE lanjutan
+
+Kerjakan per fitur, bukan sekaligus:
+
+- [ ] Integrasikan LSP dengan editor: autocomplete, hover, go to definition,
+      references, dan rename symbol.
+- [ ] Tambahkan panel Problems untuk error/warning yang dapat diklik.
+- [ ] Tambahkan pencarian isi proyek dan navigasi hasil; replace lintas file harus
+      memiliki preview/konfirmasi dan perlindungan perubahan belum tersimpan.
+- [ ] Tambahkan Source Control: status, stage/unstage, commit, pull/push, branch,
+      dan alur konflik yang tidak menyembunyikan operasi destruktif.
+- [ ] Tambahkan konfigurasi Run serta test explorer untuk toolchain yang dipilih.
+- [ ] Terakhir, integrasikan debugger melalui DAP: breakpoint, stepping,
+      variabel, dan call stack untuk bahasa/runtime yang didukung.
+
+**Kriteria selesai:** setiap fitur punya cakupan bahasa/runtime yang jelas dan tes
+end-to-end. Jangan mengklaim kompatibel seluruh ekstensi VS Code hanya karena
+menggunakan Monaco atau Electron.
+
+## Target rilis awal dan langkah berikutnya
+
+**Target rilis awal:** installer Windows → buka aplikasi → pilih folder → chat AI
+→ lihat perubahan → gunakan terminal → tutup dan buka kembali dengan aman.
+Editor manual masuk tahap berikutnya; Git lengkap, debugger, marketplace ekstensi,
+dan dukungan seluruh OS bukan syarat rilis desktop awal.
+
+**Langkah berikutnya:** mulai Tahap 0, konfirmasikan target Windows, pulihkan
+lingkungan build/test, lalu implementasikan Tahap 1A. Rencana ini belum merupakan
+klaim bahwa Electron, installer, atau fitur IDE baru telah dibuat.
+
+### Format pembaruan progres
+
+Tambahkan entri setelah setiap sub-tahap:
+
+```text
+Tanggal:
+Tahap/sub-tahap:
+Status: belum dimulai / dikerjakan / terblokir / selesai
+Perubahan dan file terkait:
+Verifikasi (perintah dan hasil):
+Kendala/risiko:
+Keputusan:
+Langkah berikutnya:
+```
+
+---
+
+## Arsip catatan teknis sebelumnya
+
+Bagian di bawah dipertahankan sebagai riwayat. Status dan hasil pengujian di
+arsip merujuk sesi/commit yang disebutkan, bukan otomatis hasil pengujian rencana
+desktop ini.
+
 # Catatan Sesi — Handover Arena
 
 Catatan kerja fork `Delta-Polder-Indonesia/opencode`. Sesi berjalan:
