@@ -77,6 +77,12 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`runtime_fence\` (
+          \`runtime_id\` text PRIMARY KEY,
+          \`heartbeat_at\` integer NOT NULL
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`credential\` (
           \`id\` text PRIMARY KEY,
           \`integration_id\` text,
@@ -292,6 +298,7 @@ export default {
       yield* tx.run(
         `CREATE INDEX \`background_job_runtime_lease_idx\` ON \`background_job\` (\`runtime_id\`,\`status\`,\`lease_until\`);`,
       )
+      yield* tx.run(`CREATE INDEX \`runtime_fence_expires_at_idx\` ON \`runtime_fence\` (\`heartbeat_at\`);`)
       yield* tx.run(`CREATE UNIQUE INDEX \`event_aggregate_seq_idx\` ON \`event\` (\`aggregate_id\`,\`seq\`);`)
       yield* tx.run(`CREATE INDEX \`event_aggregate_type_seq_idx\` ON \`event\` (\`aggregate_id\`,\`type\`,\`seq\`);`)
       yield* tx.run(

@@ -87,8 +87,9 @@ Next reviewed slices:
   (current V2 improvement slice): provider-attempt preparation/dispatched
   recovery, explicit retry/abandon controls, bounded backoff and budgets,
   process-root startup discovery, Session execution leases, provider-attempt
-  heartbeats, monotonic fences, and lease-fenced HTTP cancellation. See
-  `specs/v2/session-recovery.md` and `specs/v2/background-jobs.md`.
+  heartbeats, monotonic fences, process-global runtime-fence liveness, and
+  lease-fenced HTTP cancellation. See `specs/v2/session-recovery.md` and
+  `specs/v2/background-jobs.md`.
 
 ### Item 4 completion contract
 

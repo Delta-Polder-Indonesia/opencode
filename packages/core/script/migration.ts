@@ -69,15 +69,16 @@ async function check() {
     await fs.mkdir(incremental)
     await fs.mkdir(path.join(incremental, "baseline"))
     await fs.copyFile(snapshot, path.join(incremental, "baseline/snapshot.json"))
-    await drizzle(temporary, incremental)
+    await fs.mkdir(full)
+    // The incremental diff and the full schema dump are independent drizzle-kit
+    // runs against separate output directories; run them concurrently.
+    await Promise.all([drizzle(temporary, incremental), drizzle(temporary, full, "schema")])
     if ((await generatedMigrations(incremental)).length > 0) {
       throw new Error(
         "Core schema has ungenerated database migrations. Run `bun script/migration.ts` from packages/core.",
       )
     }
 
-    await fs.mkdir(full)
-    await drizzle(temporary, full, "schema")
     if ((await Bun.file(schema).text()) !== (await formatTypescript(renderSchema(await generatedSql(full))))) {
       throw new Error("Current database schema is stale. Run `bun script/migration.ts` from packages/core.")
     }

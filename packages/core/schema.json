@@ -3,7 +3,8 @@
   "dialect": "sqlite",
   "id": "755ae6fa-fcc1-4f61-974e-4ffbce96a55e",
   "prevIds": [
-    "7a9b02d3-2451-4f3c-a99e-171ff68e8112"
+    "7a9b02d3-2451-4f3c-a99e-171ff68e8112",
+    "8112268e-eb31-4427-b497-0e6db2fbf976"
   ],
   "ddl": [
     {
@@ -28,6 +29,10 @@
     },
     {
       "name": "background_job",
+      "entityType": "tables"
+    },
+    {
+      "name": "runtime_fence",
       "entityType": "tables"
     },
     {
@@ -533,6 +538,26 @@
       "name": "cancel_requested_at",
       "entityType": "columns",
       "table": "background_job"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "runtime_id",
+      "entityType": "columns",
+      "table": "runtime_fence"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "heartbeat_at",
+      "entityType": "columns",
+      "table": "runtime_fence"
     },
     {
       "type": "text",
@@ -2161,6 +2186,15 @@
     },
     {
       "columns": [
+        "runtime_id"
+      ],
+      "nameExplicit": false,
+      "name": "runtime_fence_pk",
+      "table": "runtime_fence",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
         "id"
       ],
       "nameExplicit": false,
@@ -2324,6 +2358,20 @@
       "name": "background_job_runtime_lease_idx",
       "entityType": "indexes",
       "table": "background_job"
+    },
+    {
+      "columns": [
+        {
+          "value": "heartbeat_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "runtime_fence_expires_at_idx",
+      "entityType": "indexes",
+      "table": "runtime_fence"
     },
     {
       "columns": [

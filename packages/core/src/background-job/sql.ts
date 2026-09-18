@@ -38,3 +38,20 @@ export const BackgroundJobTable = sqliteTable(
     index("background_job_runtime_lease_idx").on(table.runtime_id, table.status, table.lease_until),
   ],
 )
+
+/**
+ * Lease table for stale-owner fencing. One row per active runtime; the
+ * `heartbeat_at` epoch-millis is renewed every `HEARTBEAT_INTERVAL_MS` and
+ * considered expired after `FENCE_TTL_MS` without renewal. Recovery claims
+ * only background-job rows whose owning runtime's fence has expired.
+ *
+ * See specs/v2/background-jobs.md ("Stale-owner fencing").
+ */
+export const RuntimeFenceTable = sqliteTable(
+  "runtime_fence",
+  {
+    runtime_id: text().primaryKey(),
+    heartbeat_at: integer().notNull(),
+  },
+  (table) => [index("runtime_fence_expires_at_idx").on(table.heartbeat_at)],
+)

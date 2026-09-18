@@ -150,10 +150,20 @@ Write path:
 never settles to it. The registry itself stays intentionally in-memory and
 process-local — durability is layered around it, not inside it.
 
-### Runtime identity and restart recovery
+### Runtime identity, process fence, and restart recovery
 
-Each process generates one ascending `runtime_…` identifier. A running row
-also carries a monotonic `fence`, `heartbeat_at`, and `lease_until` capability.
+Each process generates one ascending `runtime_…` identifier. In addition to the
+per-job lease, the process-global `runtime_fence` row tracks liveness through a
+heartbeat. The `RuntimeFence` global node claims the row at boot, renews it
+every 10 seconds, and releases it on clean shutdown; a crashed runtime leaves
+an old heartbeat that expires after `FENCE_TTL_MS = 30_000`. A runtime that
+finds another live process fence does not use that live fence as evidence that
+foreign jobs are stale. This global liveness signal narrows recovery; the
+per-row `(runtime_id, fence, lease_until)` capability remains the authoritative
+write boundary.
+
+Each running row also carries a monotonic `fence`, `heartbeat_at`, and
+`lease_until` capability.
 `runtime_id` is an audit marker; it is never accepted as a fence by itself.
 The owner renews the lease from the long-lived watcher. Every settlement,
 heartbeat, and cancellation acknowledgement checks `(id, status, runtime_id,
@@ -162,10 +172,11 @@ runtime can finish its local child process but cannot change durable status or
 deliver a stale completion.
 
 Recovery is invoked as each Location's long-lived job-tool layer initializes;
-repeated invocations are harmless because the durable claim is atomic. It
-claims every row that satisfies **all**: `status = running`, the `runtime_id`
-differs from the current process, and `lease_until` is absent or expired.
-Each claim is an atomic guarded `UPDATE … RETURNING`, setting
+repeated invocations are harmless because the durable claim is atomic. It claims every row that satisfies **all**: `status = running`, the
+`runtime_id` differs from the current process, `lease_until` is absent or
+expired, and the owning process fence is expired or missing. A live
+`runtime_fence` heartbeat therefore prevents recovery even when a job lease
+has reached its boundary. Each claim is an atomic guarded `UPDATE … RETURNING`, setting
 `status = interrupted`, `completed_at = now`, `error = "Process exited while
 this job was running; its outcome is unknown."`, clearing the lease, and
 incrementing `fence`. Rows with a live heartbeat are never touched, even when

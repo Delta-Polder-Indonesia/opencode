@@ -1,7 +1,7 @@
 import fs from "fs/promises"
 import os from "os"
 import { Effect } from "effect"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { Global } from "@opencode-ai/core/global"
 
@@ -30,7 +30,10 @@ const testGlobal = Global.layerWith({
   log: os.tmpdir(),
 })
 
-const testLayer = AppNodeBuilder.build(EffectFlock.node, [[Global.node, testGlobal]])
+// Compile the node graph directly: `AppNodeBuilder.build` pulls in the whole
+// location-services graph, which doubles this worker's boot time. The stress
+// test spawns 16 of these, so boot cost dominates the suite's wall clock.
+const testLayer = LayerNode.compile(EffectFlock.node, [[Global.node, testGlobal]])
 
 async function job() {
   if (msg.ready) await fs.writeFile(msg.ready, String(process.pid))

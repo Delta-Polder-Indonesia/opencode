@@ -6,7 +6,7 @@ import type { Database } from "../database/database"
 import { Identifier } from "../id/id"
 import { BackgroundJob } from "../background-job"
 import { SessionSchema } from "../session/schema"
-import { BackgroundJobTable } from "./sql"
+import { BackgroundJobTable, RuntimeFenceTable } from "./sql"
 
 type DatabaseService = Database.Interface["db"]
 
@@ -23,6 +23,14 @@ export const STALE_OWNER_ERROR = "The previous job owner lost its lease; the job
 /** A lease is also a fencing capability: runtime_id alone is never sufficient. */
 export const LEASE_DURATION_MS = 30_000
 export const HEARTBEAT_INTERVAL_MS = 10_000
+
+/**
+ * Fence time-to-live. A runtime's process-global fence is considered expired
+ * when `now - heartbeat_at > FENCE_TTL_MS`. It matches the durable job lease
+ * bound and is longer than the heartbeat interval so one missed heartbeat does
+ * not expire the fence.
+ */
+export const FENCE_TTL_MS = 30_000
 
 export type Lease = {
   readonly runtimeID: string
@@ -286,6 +294,11 @@ export const recover = Effect.fn("BackgroundJobStore.recover")(function* (db: Da
     .pipe(Effect.orDie)
   const claimed: BackgroundJob.Info[] = []
   for (const row of stale) {
+    // The process-global fence is the outer stale-owner check. A job lease can
+    // be late because of a missed local heartbeat, but a live foreign runtime
+    // fence proves that the old owner is still active and must not be fenced.
+    const age = yield* fenceAge(db, row.runtime_id)
+    if (age !== null && age <= FENCE_TTL_MS) continue
     const updated = yield* db
       .update(BackgroundJobTable)
       .set({
@@ -322,4 +335,72 @@ export const expire = Effect.fn("BackgroundJobStore.expire")(function* (db: Data
     .where(eq(BackgroundJobTable.id, id))
     .run()
     .pipe(Effect.orDie)
+})
+
+/* ---- Runtime fence (lease-based stale-owner detection) ---- */
+
+/**
+ * Return the age (ms since heartbeat) of a runtime's fence, or `null` when no
+ * fence row exists for that runtime. Rows written before the runtime-fence
+ * migration, or by a runtime that released its fence during clean shutdown,
+ * are therefore treated as expired by recovery.
+ */
+export const fenceAge = Effect.fn("BackgroundJobStore.fenceAge")(function* (
+  db: DatabaseService,
+  fenceRuntimeID: string,
+) {
+  const now = yield* Clock.currentTimeMillis
+  const row = yield* db
+    .select({ heartbeat_at: RuntimeFenceTable.heartbeat_at })
+    .from(RuntimeFenceTable)
+    .where(eq(RuntimeFenceTable.runtime_id, fenceRuntimeID))
+    .get()
+    .pipe(Effect.orDie)
+  return row === undefined ? null : now - row.heartbeat_at
+})
+
+/**
+ * Claim (or reclaim) the process-global fence row. Either a fresh row is
+ * inserted, or a row whose heartbeat has expired is renamed for this runtime.
+ * Returns false while another runtime holds a live fence; callers must not
+ * treat a runtime id by itself as ownership.
+ *
+ * This is called once before job recovery and launch. Per-job leases and fences
+ * remain the authoritative write capability for each background-job row.
+ */
+export const claimFence = Effect.fn("BackgroundJobStore.claimFence")(function* (db: DatabaseService) {
+  const now = yield* Clock.currentTimeMillis
+  const rid = runtimeID()
+  const existing = yield* db.select().from(RuntimeFenceTable).get().pipe(Effect.orDie)
+  if (existing === undefined) {
+    yield* db.insert(RuntimeFenceTable).values({ runtime_id: rid, heartbeat_at: now }).run().pipe(Effect.orDie)
+    return true
+  }
+  if (existing.runtime_id === rid) return true
+  if (now - existing.heartbeat_at > FENCE_TTL_MS) {
+    yield* db
+      .update(RuntimeFenceTable)
+      .set({ runtime_id: rid, heartbeat_at: now })
+      .where(eq(RuntimeFenceTable.runtime_id, existing.runtime_id))
+      .run()
+      .pipe(Effect.orDie)
+    return true
+  }
+  return false
+})
+
+/** Renew the heartbeat for the current process-global fence. */
+export const heartbeatFence = Effect.fn("BackgroundJobStore.heartbeatFence")(function* (db: DatabaseService) {
+  const now = yield* Clock.currentTimeMillis
+  yield* db
+    .update(RuntimeFenceTable)
+    .set({ heartbeat_at: now })
+    .where(eq(RuntimeFenceTable.runtime_id, runtimeID()))
+    .run()
+    .pipe(Effect.orDie)
+})
+
+/** Release the current process-global fence during clean shutdown. */
+export const releaseFence = Effect.fn("BackgroundJobStore.releaseFence")(function* (db: DatabaseService) {
+  yield* db.delete(RuntimeFenceTable).where(eq(RuntimeFenceTable.runtime_id, runtimeID())).run().pipe(Effect.orDie)
 })

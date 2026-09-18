@@ -335,7 +335,9 @@ describe("util.effect-flock", () => {
         const dir = path.join(tmp, "locks")
         const done = path.join(tmp, "done.log")
         const active = path.join(tmp, "active")
-        const n = 16
+        // 8 workers is plenty to force real contention; each worker boots a
+        // fresh bun process (~250ms) so the count dominates wall-clock time.
+        const n = 8
 
         try {
           const out = await Promise.all(

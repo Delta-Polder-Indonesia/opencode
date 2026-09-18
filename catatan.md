@@ -4,7 +4,8 @@ Catatan kerja fork `Delta-Polder-Indonesia/opencode`. Sesi berjalan:
 `arena/01a0b0bc-opencode` (item 1–3, PR #3), `arena/01a0b171-opencode`
 (item 4a/gate 1, PR #4), `arena/01a0b189-opencode` (item 4a-lanjut/gate 3),
 lalu `arena/01a0b19d-opencode` (gate 3 lanjutan: auto-resume inbox),
-dan sekarang `arena/01a0b1b6-opencode` (item 4 final review).
+`arena/01a0b1cd-opencode` (stale-owner fencing), dan sekarang
+`arena/01a0b1b6-opencode` (item 4 final review).
 Ditulis ulang 2026-09-18 setelah slice item 4 selesai.
 Rencana induk: 5 perbaikan prioritas yang disepakati user (lihat
 `specs/v2/todo.md` dan dokumen per-fase di `specs/v2/`).
@@ -84,6 +85,19 @@ background-job.ts` yang hanya butuh `Database.Service`. Item 4 kemudian
    attempt yang ambigu. Dok: `specs/v2/background-jobs.md` +
    `specs/v2/session.md` + entri done di `specs/v2/todo.md`.
 
+7. **Stale-owner fencing / clustered execution** — diwarisi dari branch
+   `arena/01a0b1cd-opencode` dan dipertahankan dalam integrasi final. Tabel
+   `runtime_fence` melacak liveness proses lewat heartbeat global (interval
+   10 detik, TTL 30 detik); service `RuntimeFence` mengklaim dan melepaskan
+   fence saat boot/shutdown. Recovery tetap memakai lease dan fence per job,
+   sehingga `runtime_id` saja tidak pernah menjadi bukti kepemilikan.
+8. **Kecepatan test suite core** — diwarisi dari branch
+   `arena/01a0b1e7-opencode` dan dipertahankan dalam integrasi final. Optimasi
+   test/script menurunkan wall clock sekitar `38.8s` menjadi `~26.5s`
+   (1140 test, 0 gagal); perubahan hanya pada fixture, contention tests, dan
+   migration check paralelisasi. Temuan dan batasannya dicatat di
+   `perf/test-suite.md`.
+
 ## Status item #4 dan pinggiran
 
 4a/4b **selesai di branch ini**. `SessionProviderAttemptTable` membedakan
@@ -92,7 +106,8 @@ memanggil provider, prepared-only loss mendapat satu safe retry setelah
 backoff, ambiguous dispatch tetap `decision_required`, dan retry/abandon
 memerlukan kontrol eksplisit dengan budget terbatas. `SessionExecutionLeaseTable`
 dan heartbeat provider memakai monotonic `fence`; `runtime_id` hanya marker.
-HTTP cancel kini menunggu keputusan lease: live owner mendapat
+Global `runtime_fence` heartbeat menambah deteksi liveness proses, tetapi tidak
+menggantikan fence per-row. HTTP cancel kini menunggu keputusan lease: live owner mendapat
 `cancel_requested_at`, expired owner difence sebagai `interrupted` dengan
 `stale_owner=true`. Kontrak: `specs/v2/session-recovery.md` dan
 `specs/v2/background-jobs.md`.
