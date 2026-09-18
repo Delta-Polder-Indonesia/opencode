@@ -15,6 +15,8 @@ export type Runtime = {
   resetDatabase: (typeof import("../../fixture/db"))["resetDatabase"]
   Database: typeof import("@opencode-ai/core/database/database")
   BackgroundJobStore: typeof import("@opencode-ai/core/background-job/store")
+  BackgroundJobTable: (typeof import("@opencode-ai/core/background-job/sql"))["BackgroundJobTable"]
+  SessionProviderAttemptTable: (typeof import("@opencode-ai/core/session/recovery/sql"))["SessionProviderAttemptTable"]
 }
 
 let runtimePromise: Promise<Runtime> | undefined
@@ -36,6 +38,8 @@ export function runtime() {
     const db = await import("../../fixture/db")
     const database = await import("@opencode-ai/core/database/database")
     const backgroundJobStore = await import("@opencode-ai/core/background-job/store")
+    const backgroundJobSql = await import("@opencode-ai/core/background-job/sql")
+    const recoverySql = await import("@opencode-ai/core/session/recovery/sql")
     return {
       PublicApi: publicApi.PublicApi,
       HttpApiApp: httpApiServer.HttpApiApp,
@@ -53,6 +57,8 @@ export function runtime() {
       resetDatabase: db.resetDatabase,
       Database: database,
       BackgroundJobStore: backgroundJobStore,
+      BackgroundJobTable: backgroundJobSql.BackgroundJobTable,
+      SessionProviderAttemptTable: recoverySql.SessionProviderAttemptTable,
     }
   })())
 }

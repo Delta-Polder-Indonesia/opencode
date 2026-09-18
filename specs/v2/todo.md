@@ -64,16 +64,17 @@ Next reviewed slices:
   persistence failure never blocks or hides a live job), per-process `runtime_id` marker, and
   boot-time recovery that atomically claims foreign-runtime `running` rows as `interrupted` and
   delivers the usual inbox completion note to existing owner sessions; `job_*` tools fall back
-  to the durable row after registry loss and keep owner-bound hiding. Single-writer-per-database
-  assumption documented; fencing stays deferred. See `specs/v2/background-jobs.md`. Remaining
-  slices tracked there: stale-owner fencing, HTTP mutation (needs fencing), and background
-  agent dispatch (needs a V2 task tool port)
-- ~~expose HTTP background-job observation~~ **done** (arena/01a0b189): read-only
+  to the durable row after registry loss and keep owner-bound hiding. The later item 4 slice
+  adds lease/heartbeat fencing and HTTP cancellation; the original gate-1 marker semantics
+  remain historical. See `specs/v2/background-jobs.md`; background agent dispatch remains
+  deferred until a V2 task tool exists.
+- ~~expose HTTP background-job observation~~ **done** (arena/01a0b189): initially read-only
   `GET /api/job` (+ `?sessionID`/`?status`/`?limit`) and `GET /api/job/:jobID` on the V2
   protocol surface, backed by the durable rows (newest-first; the registry is deliberately
-  not consulted). Authorization decided explicitly: instance-wide, following the V1
-  experimental precedent — owner-bound hiding stays model-facing-only. Output is the
-  persisted 16 KB tail; contract and consequences in `specs/v2/background-jobs.md`
+  not consulted). The current item 4 contract adds lease-fenced `POST /api/job/:jobID/cancel`.
+  Authorization remains explicit: observation is instance-wide, following the V1 experimental
+  precedent — owner-bound hiding stays model-facing-only. Output is the persisted 16 KB tail;
+  contract and consequences are in `specs/v2/background-jobs.md`.
 - ~~auto-resume idle Sessions when background-job completion notes land~~ **done** (arena/01a0b19d):
   live settlement delivery admits the note as a `steer` (an active drain promotes it at the next
   provider-turn boundary instead of waiting to go idle) and publishes a process-local advisory wake
@@ -82,27 +83,39 @@ Next reviewed slices:
   `queue`-delivery and silent: a just-booted process does not schedule provider work. The wake is
   advisory only — it never re-dispatches an interrupted provider attempt. See
   `specs/v2/background-jobs.md`
-- add durable/clustered interruption, retries, and stale-owner fencing only as
-  their slices become concrete
+- ~~durable/clustered interruption, retries, and stale-owner fencing~~ **done**
+  (current V2 improvement slice): provider-attempt preparation/dispatched
+  recovery, explicit retry/abandon controls, bounded backoff and budgets,
+  process-root startup discovery, Session execution leases, provider-attempt
+  heartbeats, monotonic fences, and lease-fenced HTTP cancellation. See
+  `specs/v2/session-recovery.md` and `specs/v2/background-jobs.md`.
 
-### Deferred durable continuation recovery
+### Item 4 completion contract
 
-Do not infer that ambiguous provider work is safe to retry from an advisory wake.
-Inbox-driven resume is landed for background-job completion (see the entry above),
-but it only drains durable input; it never re-dispatches a provider attempt.
-The first inbox-driven runner intentionally omits outer provider-attempt markers
-until they have a concrete consumer and a complete recovery policy.
+The advisory wake remains only a scheduler hint. It can drain durable input,
+but it never authorizes replay of an interrupted provider call. The completed
+recovery policy is:
 
-Design post-crash continuation recovery as one explicit slice. It should model:
+- `prepared` means the request was assembled but provider dispatch was not
+  durably recorded; startup marks it `retry_ready` and permits one bounded
+  automatic retry after backoff;
+- `dispatched` with an expired lease means the provider outcome is ambiguous;
+  startup marks it `decision_required`, never retries it implicitly, and keeps
+  the row visible through the Session recovery API;
+- explicit retry requires confirmation for ambiguous dispatch, carries a
+  bounded retry budget, and creates a fresh provider request; explicit abandon
+  closes the current decision without dispatch;
+- Session drains and provider attempts both use leases, heartbeats, and
+  monotonic fences. `runtime_id` alone is an audit marker, not ownership;
+- HTTP job cancellation records a live-owner request or fences an expired
+  owner before returning `stale_owner`, so remote mutation never claims that a
+  dead process stopped.
 
-- promoted input and projected-history state
-- queued-input promotion and steering assignment
-- provider-attempt preparation versus provider-dispatch ambiguity
-- required post-tool continuation across process loss
-- explicit `retry` and `abandon` decisions for unknown outcomes
-- bounded automatic retry only where provider and tool idempotency make it safe
-- retry budget, backoff, visible recovery status, startup discovery, and future
-  clustered ownership fencing
+The normative test-suite speed contract is in `specs/perf/test-suite.md`;
+`perf/test-suite.md` keeps the benchmark and hypothesis history: one-run
+full-suite benchmark, sequential per-file profiler, explicit metrics, measured
+hypothesis loop, and discarded experiments. Keep the contract and the evidence
+split intentionally so the stable rules do not become a mutable benchmark log.
 
 Do not introduce an enclosing durable execution identity solely to group these
 facts; a process-local Session drain has no durable transcript boundary.
@@ -148,8 +161,8 @@ Remaining slices:
   generated SDK where remote consumers need it~~ **done** (arena/01a0b0bc): verified
   end-to-end with new cursor-semantics route coverage; consumer contract documented in
   `specs/v2/session-event-cursor.md`
-- keep replay-owner claims distinct from future clustered Session execution
-  ownership and stale-runtime fencing
+- keep replay-owner claims distinct from the implemented clustered Session
+  execution ownership and stale-runtime fencing
 
 ## Deferred hardening cleanup
 
@@ -158,9 +171,9 @@ failure appears during canary work:
 
 - serialize database migration claiming across processes; current migration
   application is protected only by an in-process semaphore, so two processes
-  starting against one SQLite database can still race (same class:
-  background-job restart-recovery claims assume one live runtime per
-  database; `runtime_id` is a marker, not a fence)
+  starting against one SQLite database can still race. Background-job
+  restart-recovery claims are now compare-and-set/lease-fenced; migration
+  claiming remains a separate hardening concern
 - simplify process-local durable-tail wake lifecycle with Effect `RcMap` and one
   shared `PubSub.sliding<void>(1)` per active aggregate; keep SQLite cursor replay
   and subscribe-before-history semantics unchanged

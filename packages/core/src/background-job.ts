@@ -27,6 +27,8 @@ export type Info = {
    * carries ownership in metadata). HTTP observation reads it directly.
    */
   session_id?: SessionSchema.ID
+  /** A durable cancel request is visible until the live owner acknowledges it. */
+  cancel_requested_at?: number
 }
 
 type Active = {

@@ -31,6 +31,7 @@ import { SessionHistory } from "../history"
 import { SessionInput } from "../input"
 import { SessionSchema } from "../schema"
 import { SessionStore } from "../store"
+import { SessionRecoveryStore } from "../recovery/store"
 import { type RunError, Service } from "./index"
 import { SessionRunnerModel } from "./model"
 import { createLLMEventPublisher, STREAM_DELTA_COALESCE } from "./publish-llm-event"
@@ -48,9 +49,9 @@ import { llmClient } from "../../effect/app-node-platform"
  *
  * - Session ownership and controls
  *   - [x] Coordinate one local active drain per Session; explicit resumes join and prompt wakeups coalesce.
- *   - [ ] Replace local ownership with durable multi-node ownership when clustered.
+ *   - [x] Replace local ownership with a durable Session lease, heartbeat, and monotonic fence.
  *   - [ ] Mark busy, retrying, idle, interrupted, or terminal-failure status durably.
- *   - [ ] Honor interruption and reject stale work after runtime attachment replacement.
+ *   - [x] Honor lease interruption and reject stale provider-attempt settlement after ownership replacement.
  *   - [x] Honor optional agent step limits.
  *   - [ ] Bound provider retries and repeated identical tool calls.
  *
@@ -75,7 +76,7 @@ import { llmClient } from "../../effect/app-node-platform"
  *     plugins, and cancellation settlement.
  *   - [x] Reload projected history and start the next explicit provider turn after local tool results.
  *   - [x] Continue for durable user steering accepted during an active provider turn.
- *   - [ ] Continue for compaction or another continuation condition when required.
+ *   - [x] Continue after automatic compaction and record provider-attempt recovery state.
  *
  * - Post-run maintenance
  *   - [ ] Settle final status and expose durable output events to replayable consumers.
@@ -85,7 +86,8 @@ import { llmClient } from "../../effect/app-node-platform"
  *   - [ ] Update title, summaries, compaction state, and cleanup in bounded background work.
  *
  * Use `llm.stream(request)` for each provider turn. Keep tool execution and continuation here.
- * Durable continuation recovery remains a separate future slice with an explicit retry policy.
+ * Provider-attempt recovery is durable and lease-fenced; its explicit retry policy lives in
+ * `specs/v2/session-recovery.md` rather than in the advisory wake path.
  *
  * The current slice loads V2 history, translates it, resolves a model through a core service, and persists one
  * provider turn. Registry definitions are advertised, local tool calls are settled durably, and an
@@ -177,6 +179,7 @@ const layer = Layer.effect(
       promotion: SessionInput.Delivery | undefined,
       step: number,
       recoverOverflow?: typeof compaction.compactAfterOverflow,
+      retryCount = 0,
     ) {
       const session = yield* getSession(sessionID)
       if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
@@ -223,6 +226,16 @@ const layer = Layer.effect(
       })
       if (yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request }))
         return yield* Effect.die(continueAfterCompaction(currentStep))
+
+      // The marker is prepared only after the request is complete and immediately
+      // before dispatch. A crash before `markDispatched` is safe to retry; once
+      // dispatch is recorded, an outcome-less crash is never retried implicitly.
+      const attempt = yield* SessionRecoveryStore.prepare(db, {
+        sessionID: session.id,
+        step: currentStep,
+        retryCount,
+      })
+      if (!(yield* SessionRecoveryStore.markDispatched(db, attempt))) return yield* Effect.interrupt
       const startSnapshot = yield* snapshots.capture()
       const withPublication = Semaphore.makeUnsafe(1).withPermit
       const publisher = createLLMEventPublisher(events, {
@@ -291,12 +304,39 @@ const layer = Layer.effect(
         ),
         Effect.ensuring(withPublication(publisher.flush())),
       )
+      const attemptHeartbeat = Effect.gen(function* () {
+        while (true) {
+          yield* Effect.sleep(SessionRecoveryStore.ATTEMPT_LEASE_DURATION_MS / 3)
+          if (!(yield* SessionRecoveryStore.heartbeat(db, attempt))) return yield* Effect.interrupt
+        }
+      })
 
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          const stream = yield* restore(providerStream).pipe(Effect.exit)
+          const stream = yield* restore(Effect.raceFirst(providerStream, attemptHeartbeat)).pipe(Effect.exit)
           const failure =
             stream._tag === "Failure" ? Option.getOrUndefined(Cause.findErrorOption(stream.cause)) : undefined
+          const attemptStatus =
+            stream._tag === "Failure"
+              ? Cause.hasInterrupts(stream.cause)
+                ? ("abandoned" as const)
+                : ("failed" as const)
+              : overflowFailure || publisher.hasProviderError()
+                ? ("failed" as const)
+                : ("succeeded" as const)
+          const attemptError =
+            attemptStatus === "abandoned"
+              ? SessionRecoveryStore.UNKNOWN_DISPATCH_ERROR
+              : stream._tag === "Failure"
+                ? String(Cause.squash(stream.cause))
+                : undefined
+          yield* SessionRecoveryStore.settle(db, attempt, attemptStatus, attemptError).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Failed to persist provider attempt settlement", cause).pipe(
+                Effect.annotateLogs({ attemptID: attempt.id, sessionID: session.id }),
+              ),
+            ),
+          )
           if (
             recoverOverflow &&
             !publisher.hasAssistantStarted() &&
@@ -368,31 +408,32 @@ const layer = Layer.effect(
       sessionID: SessionSchema.ID,
       promotion: SessionInput.Delivery | undefined,
       step: number,
+      retryCount: number,
     ) => Effect.Effect<{ readonly needsContinuation: boolean; readonly step: number }, RunError>
 
-    const runAfterOverflowCompaction: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step) {
-      return yield* runTurnAttempt(sessionID, promotion, step).pipe(
+    const runAfterOverflowCompaction: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, retryCount) {
+      return yield* runTurnAttempt(sessionID, promotion, step, undefined, retryCount).pipe(
         Effect.catchDefect(
           Effect.fnUntraced(function* (defect) {
             if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
             if (defect.transition._tag === "ContinueAfterOverflowCompaction")
               return yield* Effect.die("Post-compaction provider attempt cannot recover another overflow")
             yield* Effect.yieldNow
-            return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step)
+            return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step, retryCount)
           }),
         ),
       )
     })
 
-    const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step) {
-      return yield* runTurnAttempt(sessionID, promotion, step, compaction.compactAfterOverflow).pipe(
+    const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, retryCount) {
+      return yield* runTurnAttempt(sessionID, promotion, step, compaction.compactAfterOverflow, retryCount).pipe(
         Effect.catchDefect(
           Effect.fnUntraced(function* (defect) {
             if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
             yield* Effect.yieldNow
             if (defect.transition._tag === "ContinueAfterOverflowCompaction")
-              return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step)
-            return yield* runTurn(sessionID, undefined, defect.transition.step)
+              return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step, retryCount)
+            return yield* runTurn(sessionID, undefined, defect.transition.step, retryCount)
           }),
         ),
       )
@@ -406,13 +447,16 @@ const layer = Layer.effect(
       const hasQueue = hasSteer ? false : yield* SessionInput.hasPending(db, input.sessionID, "queue")
       if (!input.force && !hasSteer && !hasQueue) return
       yield* failInterruptedTools(input.sessionID)
+      const retryCount = yield* SessionRecoveryStore.consumeSafeRetry(db, input.sessionID)
       let promotion: SessionInput.Delivery | undefined = hasSteer ? "steer" : hasQueue ? "queue" : undefined
       let shouldRun = input.force || hasSteer || hasQueue
+      let firstAttempt = true
       while (shouldRun) {
         let needsContinuation = true
         let step = 1
         while (needsContinuation) {
-          const result = yield* runTurn(input.sessionID, promotion, step)
+          const result = yield* runTurn(input.sessionID, promotion, step, firstAttempt ? (retryCount ?? 0) : 0)
+          firstAttempt = false
           needsContinuation = result.needsContinuation
           step = result.step + 1
           promotion = "steer"

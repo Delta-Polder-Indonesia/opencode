@@ -1,10 +1,9 @@
 # V2 Background Jobs over Tool Execution
 
-Status: gates 1+2 implemented (gate 2 on branch `arena/01a0b0bc-opencode`,
-gate 1 on branch `arena/01a0b171-opencode`); gate 3 (HTTP observation) is
-specified below and implemented on `arena/01a0b189-opencode`; auto-resume on
-completion delivery implemented on `arena/01a0b19d-opencode`. Supersedes the
-"integrate the new BackgroundJob service with V2 tool execution" entry in
+Status: gates 1–3 are implemented. Live completion delivery uses the shared
+SessionWake hub, restart recovery is queue-only and silent, and the current
+slice adds lease/heartbeat fencing plus the HTTP cancel mutation. Supersedes
+the "integrate the new BackgroundJob service with V2 tool execution" entry in
 `todo.md`. This document is the design contract; keep the remaining-slices
 section accurate as follow-ups land.
 
@@ -104,10 +103,11 @@ dropped wake degrades to the previous behavior.
 Restart recovery is deliberately different: claimed rows are delivered with
 `queue` delivery and **no** wake. A process that just booted does not schedule
 provider work for its recovery notes; the session learns the job's fate on its
-next activity, and startup discovery belongs to the deferred
-continuation-recovery slice in `todo.md`. Recovery notes are still delivered
+next activity. Recovery notes are still delivered
 for jobs claimed as `interrupted` (see below), so the fate is never lost
-across a process crash.
+across a process crash. Provider-attempt startup discovery is a separate,
+non-executing root service described in `specs/v2/session-recovery.md`; it does
+not turn this job-note delivery into provider replay.
 
 ## Durable status (gate 1)
 
@@ -116,18 +116,21 @@ across a process crash.
 Tool-launched jobs persist to the `background_job` table in the (global)
 SQLite database:
 
-| column                        | content                                                                      |
-| ----------------------------- | ---------------------------------------------------------------------------- |
-| `id`                          | job id (primary key)                                                         |
-| `type`                        | launcher type, e.g. `bash`                                                   |
-| `title`                       | display title (command preview)                                              |
-| `session_id`                  | owning session (FK → `session`, cascade delete), indexed with `status`       |
-| `status`                      | `running`, `completed`, `error`, `cancelled`, or `interrupted`               |
-| `runtime_id`                  | per-process marker of the runtime that started the row                       |
-| `started_at` / `completed_at` | epoch millis                                                                 |
-| `output`                      | bounded tail of the settled output (last 16 KB, `…`-prefixed when truncated) |
-| `error`                       | settled error text, or the recovery message                                  |
-| `metadata`                    | the owner metadata JSON exactly as stored on the registry job                |
+| column                         | content                                                                                           |
+| ------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `id`                           | job id (primary key)                                                                              |
+| `type`                         | launcher type, e.g. `bash`                                                                        |
+| `title`                        | display title (command preview)                                                                   |
+| `session_id`                   | owning session (FK → `session`, cascade delete), indexed with `status`                            |
+| `status`                       | `running`, `completed`, `error`, `cancelled`, or `interrupted`                                    |
+| `runtime_id`                   | per-process marker of the runtime that started or currently owns the row; never a fence by itself |
+| `fence`                        | monotonic compare-and-set ownership token                                                         |
+| `heartbeat_at` / `lease_until` | owner heartbeat and expiry epoch millis                                                           |
+| `cancel_requested_at`          | durable remote-cancel request observed by the live owner heartbeat                                |
+| `started_at` / `completed_at`  | epoch millis                                                                                      |
+| `output`                       | bounded tail of the settled output (last 16 KB, `…`-prefixed when truncated)                      |
+| `error`                        | settled error text, or the recovery message                                                       |
+| `metadata`                     | the owner metadata JSON exactly as stored on the registry job                                     |
 
 Write path:
 
@@ -149,16 +152,35 @@ process-local — durability is layered around it, not inside it.
 
 ### Runtime identity and restart recovery
 
-Each process generates one ascending `runtime_…` identifier. Recovery runs
-once per Location service boot inside the `tool/job` node (before any tool
-can execute) and claims every row that satisfies **both**: `status =
-running` **and** `runtime_id` differs from the current process. Each claim is
-an atomic `UPDATE … WHERE id = ? AND status = 'running' RETURNING`, setting
-`status = interrupted`, `completed_at = now`, and
-`error = "Process exited while this job was running; its outcome is
-unknown."` Rows belonging to the current runtime are never touched (this
-also makes recovery idempotent across Location rebuilds within one process),
-and settled rows are never reopened.
+Each process generates one ascending `runtime_…` identifier. A running row
+also carries a monotonic `fence`, `heartbeat_at`, and `lease_until` capability.
+`runtime_id` is an audit marker; it is never accepted as a fence by itself.
+The owner renews the lease from the long-lived watcher. Every settlement,
+heartbeat, and cancellation acknowledgement checks `(id, status, runtime_id,
+fence)` and an unexpired lease. A later owner increments `fence`, so an old
+runtime can finish its local child process but cannot change durable status or
+deliver a stale completion.
+
+Recovery is invoked as each Location's long-lived job-tool layer initializes;
+repeated invocations are harmless because the durable claim is atomic. It
+claims every row that satisfies **all**: `status = running`, the `runtime_id`
+differs from the current process, and `lease_until` is absent or expired.
+Each claim is an atomic guarded `UPDATE … RETURNING`, setting
+`status = interrupted`, `completed_at = now`, `error = "Process exited while
+this job was running; its outcome is unknown."`, clearing the lease, and
+incrementing `fence`. Rows with a live heartbeat are never touched, even when
+another runtime starts against the same database. Rows belonging to the
+current runtime are not recovered during the same process (which keeps
+Location rebuilds idempotent), and settled rows are never reopened.
+
+A remote cancel is deliberately two-phase: while the lease is live, HTTP
+records `cancel_requested_at` and returns `{ requested: true }`; the owner
+observes that bit on its next heartbeat and interrupts its local registry job.
+The response does **not** claim that the remote process has already stopped.
+When the lease is expired, the API fences the row and returns
+`{ stale_owner: true }` with `interrupted`/unknown status instead of falsely
+returning `cancelled`. This is the mutation boundary that makes clustered
+observation safe.
 
 For each claimed row whose owning session still exists, recovery admits the
 same durable queue-delivery completion note the live watcher would have
@@ -168,12 +190,11 @@ row).
 
 ### Semantics guarantees (and non-guarantees)
 
-- Single-writer assumption: recovery is correct under **one live runtime per
-  database**. Two processes against one SQLite database can race on claims;
-  this is the same class as the existing process-local advisory-wake and
-  migration-claiming debt in `todo.md`. Stale-owner fencing (leases,
-  heartbeats, or clustered ownership) is a later slice and must not be
-  inferred from `runtime_id` alone.
+- Claims and mutations are lease/fence guarded. Two runtimes may observe the
+  same expired row, but only the compare-and-set update that still matches its
+  `(id, status, runtime_id, fence)` can win. A winner increments the fence;
+  stale settlement, heartbeat, and cancellation acknowledgements become
+  no-ops. `runtime_id` alone is never a safety boundary.
 - The durable row is the restart-time truth; the live registry remains the
   live-time truth. A live `job_get` always prefers the registry, so full
   in-memory output stays available for the process lifetime even though the
@@ -227,8 +248,8 @@ that skips deliveries to deleted sessions.
 
 ### Contract
 
-Two read-only routes on the durable store, mounted on the V2 protocol
-surface (group `server.job`):
+The durable store is mounted on the V2 protocol surface (group
+`server.job`):
 
 - `GET /api/job` (`v2.job.list`) — list durable job rows, newest first
   (`started_at` desc, `id` desc as tiebreak). Query: optional `sessionID`
@@ -237,35 +258,44 @@ surface (group `server.job`):
   `{ data: BackgroundJobInfo[] }`.
 - `GET /api/job/:jobID` (`v2.job.get`) — one durable row, or 404
   `JobNotFoundError` when no row has that id.
+- `POST /api/job/:jobID/cancel` (`v2.job.cancel`) — for a live lease, records
+  `cancel_requested_at` and returns `{ requested: true, stale_owner: false }`.
+  The owner heartbeat observes the request and interrupts its local registry
+  job; the HTTP response never claims that the process has already stopped.
+  For an expired or missing lease, the handler atomically increments the
+  fence, records `interrupted` with an unknown-outcome error, and returns
+  `{ requested: false, stale_owner: true }`. Already-settled rows are returned
+  unchanged with both flags false. `JobNotFoundError` remains the 404 result
+  for an unknown id.
 
 The wire shape mirrors the model-facing job tools (`id`, `type`, `title`,
 `status` including `interrupted`, `started_at`, `completed_at`, `output`,
-`error`) plus `session_id` and `metadata`, so an app can render the same
-object a model sees. Output is always bounded by the same 16 KB tail the
-store persists — the HTTP surface observes durable truth, not the
-registry's unbounded in-memory text.
+`error`) plus `session_id`, `metadata`, and the durable
+`cancel_requested_at` marker, so an app can render the same object a model
+sees. Output is always bounded by the same 16 KB tail the store persists —
+the HTTP surface observes durable truth, not the registry's unbounded
+in-memory text.
 
 **Truth source is the durable row, not the live registry.** The registry is
 process- and Location-scoped, so rows are the only observation source that
-means the same thing from every process, after restarts, and across
-Location rebuilds. Consequences, all within the existing best-effort
-durability contract:
+means the same thing from every process, after restarts, and across Location
+rebuilds. Consequences, all within the existing best-effort durability
+contract:
 
 - a `running` row is live truth for "some runtime started this job";
   a job whose settlement has not been persisted yet (or whose persistence
   failed — logged, never blocking) may briefly or persistently read as
   `running` after it actually finished remotely, exactly as it does to
   restart recovery;
-- a job whose launch-row insert failed is invisible to HTTP observation
-  while remaining fully visible model-facing for its process lifetime —
-  the documented degrade-to-process-local path;
+- a job whose launch-row insert failed is invisible to HTTP observation and
+  HTTP mutation while remaining fully visible model-facing for its process
+  lifetime — the documented degrade-to-process-local path;
 - full live output is a model-facing registry feature; remote consumers get
   the durable tail.
 
-Mutation (cancel/wait over HTTP) is deliberately out of scope: gate 3 is
-observation. Cross-process control would need the stale-owner fencing slice
-first (cancelling a `running` row owned by a dead runtime must not pretend
-to stop anything).
+The cancellation mutation waits for the lease/fence decision before returning
+and never pretends that a stale runtime was stopped. There is no HTTP `wait`
+mutation: clients observe the durable row after requesting cancellation.
 
 V1 jobs stay out of this namespace by design: the legacy experimental
 surface continues to observe only V1 registry jobs, and `/api/job` exposes
@@ -295,12 +325,22 @@ Unit/integration coverage in `packages/core/test/`:
     session, and cancelled jobs deliver nothing and never wake,
   - launch persists a `running` row and settlement persists status, bounded
     output tail, and completion time; cancellation persists `cancelled`,
-  - recovery claims foreign-runtime `running` rows as `interrupted`, leaves
-    current-runtime and settled rows untouched, delivers a queue note (with
-    no wake) for existing owner sessions, skips deleted sessions, and the
-    claimed job becomes observable through `job_get` with an empty registry,
+  - recovery claims expired foreign-runtime `running` rows as `interrupted`,
+    leaves live-heartbeat, current-runtime, and settled rows untouched,
+    increments the fence, delivers a queue note (with no wake) for existing
+    owner sessions, skips deleted sessions, and the claimed job becomes
+    observable through `job_get` with an empty registry,
+  - a live HTTP-style cancel records a request for the owner heartbeat, an
+    expired owner is fenced as interrupted, and stale settlement is rejected,
   - `BackgroundJobStore.list` orders newest-first, and filters by owner
     session, status, and limit.
+- `session-recovery.test.ts`
+  - preparation-only loss becomes retry-ready and consumes at most one safe
+    automatic retry after backoff,
+  - dispatched ambiguity is fenced, visible, and confirmation-gated before
+    explicit retry,
+  - an expired Session lease can be acquired by a new runtime with an
+    incremented fence.
 - `session-wake.test.ts`
   - a wake drains an idle Session through its Location's `SessionRunner`, and
     wakes for Sessions that no longer exist are ignored,
@@ -311,7 +351,14 @@ Unit/integration coverage in `packages/core/test/`:
   - `v2.job.list` returns seeded durable rows newest-first and honors the
     `sessionID` filter,
   - `v2.job.get` returns one seeded row and answers 404 `JobNotFoundError`
-    for unknown ids.
+    for unknown ids,
+  - `v2.job.cancel` exercises both the live-owner request and expired-owner
+    fencing paths,
+  - `v2.session.recovery.list`, `.retry.confirmation-required`, `.retry`, and
+    `.abandon` exercise durable recovery visibility and explicit decisions.
+- Generated V2 SDK types and operations are regenerated from the route
+  contract; generated OpenAPI/config/lock artifacts remain local and are not
+  committed.
 
 Core typecheck (`packages/core`, tsgo) must pass; the full
 `packages/opencode` typecheck does not fit the ~3.9 GB sandbox (baseline
@@ -319,20 +366,6 @@ already takes ~700 s and is OOM-prone) and is intentionally not gating here.
 
 ## Remaining slices
 
-- **Continuation-recovery policy**: inbox-driven resume landed here (idle
-  sessions wake, active drains steer at the next provider-turn boundary), but
-  the wake stays advisory and never re-dispatches an interrupted provider
-  attempt. Provider-attempt preparation versus dispatch ambiguity, explicit
-  `retry`/`abandon` decisions for unknown outcomes, retry budget/backoff,
-  visible recovery status, and startup discovery remain deferred to the slice
-  described in `specs/v2/todo.md`.
-- **HTTP mutation (cancel over API)**: read-only observation landed with
-  gate 3; cross-process cancel/wait needs stale-owner fencing first so a
-  cancel of a dead runtime's `running` row cannot pretend to stop work.
-- **Stale-owner fencing / clustered execution**: lease or heartbeat-based
-  ownership so multiple runtimes can share one database safely; builds on
-  the `runtime_id` column but must not be inferred from it yet. Tracked with
-  the interruption/retries/fencing entry in `todo.md`.
 - **Background agent dispatch**: the `job_*` tools are agent-dispatch ready
   (ownership + wait/cancel are dispatch-agnostic), but a V2 sub-agent tool
   does not exist in core yet; port `task` from the app package first

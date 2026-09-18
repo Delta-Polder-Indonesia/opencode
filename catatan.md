@@ -3,8 +3,9 @@
 Catatan kerja fork `Delta-Polder-Indonesia/opencode`. Sesi berjalan:
 `arena/01a0b0bc-opencode` (item 1–3, PR #3), `arena/01a0b171-opencode`
 (item 4a/gate 1, PR #4), `arena/01a0b189-opencode` (item 4a-lanjut/gate 3),
-lalu `arena/01a0b19d-opencode` (gate 3 lanjutan: auto-resume inbox).
-Ditulis ulang 2026-09-17 setelah slice auto-resume selesai.
+lalu `arena/01a0b19d-opencode` (gate 3 lanjutan: auto-resume inbox),
+dan sekarang `arena/01a0b1b6-opencode` (item 4 final review).
+Ditulis ulang 2026-09-18 setelah slice item 4 selesai.
 Rencana induk: 5 perbaikan prioritas yang disepakati user (lihat
 `specs/v2/todo.md` dan dokumen per-fase di `specs/v2/`).
 
@@ -42,18 +43,19 @@ Rencana induk: 5 perbaikan prioritas yang disepakati user (lihat
    `experimental` melihat semua job instance); owner-hiding tetap
    **hanya model-facing** (`job_*` tools) karena seluruh surface V2 sudah
    membeberkan isi sesi ke konsumen terautentikasi — duplikasi di HTTP
-   hanya konsistensi-palsu. Permukaannya read-only:
+   hanya konsistensi-palsu. Permukaannya semula read-only:
    - `GET /api/job` (`v2.job.list`; query `sessionID`/`status`/`limit`,
      default 50) dan `GET /api/job/:jobID` (`v2.job.get`, 404
      `JobNotFoundError`) — group baru `server.job` di `packages/protocol`
      (`groups/background-job.ts`), handler `packages/server/src/handlers/
-background-job.ts` yang hanya butuh `Database.Service`.
+background-job.ts` yang hanya butuh `Database.Service`. Item 4 kemudian
+     menambahkan `POST /api/job/:jobID/cancel` yang lease-fenced.
    - Sumber kebenaran = **baris durabel saja**; registry process-local
      sengaja tidak dikonsultasi (registry itu per-Location; baris maknanya
      sama dari proses mana pun, lintas restart). Konsekuensinya
      terdokumentasi: job yang persist-nya gagal tak terlihat remote;
      settle yang belum ter-persist sempat terbaca `running`; output selalu
-     tail 16KB. Mutasi (cancel via API) sengaja ditunda sampai fencing.
+     tail 16KB.
    - Store: `BackgroundJobStore.list(db, {sessionID?, status?, limit?})`
      newest-first (`started_at` desc, `id` desc); `fromRow` kini membawa
      `session_id` (field opsional baru di `BackgroundJob.Info` — jalur
@@ -82,22 +84,52 @@ background-job.ts` yang hanya butuh `Database.Service`.
    attempt yang ambigu. Dok: `specs/v2/background-jobs.md` +
    `specs/v2/session.md` + entri done di `specs/v2/todo.md`.
 
-## Yang BELUM selesai (antrian sesi berikutnya, urutan prioritas user)
+## Status item #4 dan pinggiran
 
-4-lanjut. **Sisa item #4** — urutannya:
-a. **Durable continuation recovery** (bagian "Deferred durable
-continuation recovery" di `todo.md`) — auto-resume inbox sudah DONE
-(arena/01a0b19d, lihat #6). Yang tersisa dari slice ini: policy pemulihan
-penuh — provider-attempt preparation vs dispatch ambiguity, keputusan
-eksplisit `retry`/`abandon`, bounded automatic retry, budget/backoff,
-status pemulihan yang terlihat, dan startup discovery.
-b. **Stale-owner fencing / clustered execution** — lease/heartbeat di
-atas `runtime_id`; terkait interruption/retries terkluster di todo.
-Prekursor HTTP mutation (cancel via API) menunggu ini.
-c. **Kecepatan test suite** — `specs/perf/test-suite.md`; belum mulai. 5. Pinggir lain (bukan prioritas user, tercatat di dokumen fase): adopsi
-cursor di app/desktop sync (menunggu "New Data Mode"); background agent
-dispatch (`job_*` dispatch-ready, tapi tool `task`/sub-agent V2 belum ada
-di core — port dulu dari package app).
+4a/4b **selesai di branch ini**. `SessionProviderAttemptTable` membedakan
+`prepared` dari `dispatched`, startup discovery hanya menandai state dan tidak
+memanggil provider, prepared-only loss mendapat satu safe retry setelah
+backoff, ambiguous dispatch tetap `decision_required`, dan retry/abandon
+memerlukan kontrol eksplisit dengan budget terbatas. `SessionExecutionLeaseTable`
+dan heartbeat provider memakai monotonic `fence`; `runtime_id` hanya marker.
+HTTP cancel kini menunggu keputusan lease: live owner mendapat
+`cancel_requested_at`, expired owner difence sebagai `interrupted` dengan
+`stale_owner=true`. Kontrak: `specs/v2/session-recovery.md` dan
+`specs/v2/background-jobs.md`.
+
+4c **sudah ada dan diverifikasi** di `specs/perf/test-suite.md`, dengan
+riwayat pengukuran di `perf/test-suite.md`: benchmark full-suite satu run,
+profiler per-file sequential, metric output, hypothesis loop, dan dead ends.
+
+Pinggiran (bukan prioritas item #4): adopsi cursor di app/desktop sync
+(menunggu "New Data Mode"); background agent dispatch (`job_*`
+dispatch-ready, tetapi tool `task`/sub-agent V2 belum ada di core — port dulu
+dari package app).
+
+## Verifikasi final item 4 (2026-09-18)
+
+- Targeted core recovery/background-job tests: `21 pass`, `0 fail`, `90 expect()`;
+  scoped typechecks for `protocol`, `core`, `server`, and `sdk/js` pass sequentially.
+- HTTP coverage and auth gates: masing-masing `selected=220`, `pass=220`,
+  `fail=0`, `skip=0`, `missing=0`, `extra=0`.
+- Accepted full benchmark remains the one-run `304.404s` result recorded in
+  `perf/test-suite.md`. The latest scoped server profile (`49` files, sequential) is recorded in
+  `perf/test-suite.md`: slowest `test/server/httpapi-session.test.ts` at
+  `12.944s` (`METRIC slowest_test_file_seconds=12.944`).
+- Effect route execution remains diagnostic-only: accepted completed run
+  `212 pass`, `8 fail`, `0 skip`, `missing=0`, `extra=0`. The eight known
+  diagnostics are `config.providers`, `provider.list`,
+  `v2.session.permission.create`, `session.init`, `session.prompt`,
+  `session.prompt_async`, `session.command`, and `session.summarize`; they
+  require provider/model-backed or legacy route behavior and are not the
+  coverage/auth contract gates. A later full diagnostic rerun reached the
+  180-second command timeout before buffered scenario output, so it is not
+  used as acceptance evidence.
+- Repository-wide `bun run lint` still exits on a pre-existing octal-literal
+  error in `packages/session-ui/src/v2/components/prompt-input/index.tsx`;
+  changed-file lint had no errors (only existing warnings).
+- Generated `packages/opencode/config.json` was removed; `openapi.json` and
+  `bun.lock` remain uncommitted per the standing constraints.
 
 ## Batasan sandbox yang HARUS diketahui sesi berikutnya
 
@@ -131,5 +163,5 @@ cd /home/user/opencode
 npm install -g bun 2>/dev/null; NODE_TLS_REJECT_UNAUTHORIZED=0 bun install
 cd packages/core && bun test && bun run typecheck      # ~35s + ~10s
 cd ../opencode && bun run script/httpapi-exercise.ts --mode coverage \
-  --fail-on-missing --fail-on-skip                     # 214 skenario
+  --fail-on-missing --fail-on-skip                     # 220 skenario
 ```

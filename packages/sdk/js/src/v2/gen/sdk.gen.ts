@@ -295,6 +295,8 @@ import type {
   V2IntegrationGetResponses,
   V2IntegrationListErrors,
   V2IntegrationListResponses,
+  V2JobCancelErrors,
+  V2JobCancelResponses,
   V2JobGetErrors,
   V2JobGetResponses,
   V2JobListErrors,
@@ -375,6 +377,12 @@ import type {
   V2SessionQuestionRejectResponses,
   V2SessionQuestionReplyErrors,
   V2SessionQuestionReplyResponses,
+  V2SessionRecoveryAbandonErrors,
+  V2SessionRecoveryAbandonResponses,
+  V2SessionRecoveryListErrors,
+  V2SessionRecoveryListResponses,
+  V2SessionRecoveryRetryErrors,
+  V2SessionRecoveryRetryResponses,
   V2SessionRevertClearErrors,
   V2SessionRevertClearResponses,
   V2SessionRevertCommitErrors,
@@ -5138,6 +5146,125 @@ export class Job extends HeyApiClient {
       ...params,
     })
   }
+
+  /**
+   * Request cancellation of a background job
+   *
+   * Request cancellation through the durable owner lease. A live owner acknowledges on its next heartbeat; an expired owner is fenced and reported interrupted rather than falsely reported as stopped.
+   */
+  public cancel<ThrowOnError extends boolean = false>(
+    parameters: {
+      jobID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "jobID" }] }])
+    return (options?.client ?? this.client).post<V2JobCancelResponses, V2JobCancelErrors, ThrowOnError>({
+      url: "/api/job/{jobID}/cancel",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Recovery extends HeyApiClient {
+  /**
+   * List continuation recovery attempts
+   *
+   * Read durable provider-attempt recovery state. Dispatched attempts with unknown outcomes remain visible and are never retried implicitly.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
+    return (options?.client ?? this.client).get<
+      V2SessionRecoveryListResponses,
+      V2SessionRecoveryListErrors,
+      ThrowOnError
+    >({
+      url: "/api/session/{sessionID}/recovery",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Retry a provider attempt
+   *
+   * Explicitly retry a durable recovery attempt. Ambiguous provider dispatch requires confirmAmbiguous=true and consumes a bounded retry budget.
+   */
+  public retry<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      attemptID: string
+      confirmAmbiguous?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "attemptID" },
+            { in: "body", key: "confirmAmbiguous" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      V2SessionRecoveryRetryResponses,
+      V2SessionRecoveryRetryErrors,
+      ThrowOnError
+    >({
+      url: "/api/session/{sessionID}/recovery/{attemptID}/retry",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Abandon a provider attempt
+   *
+   * Explicitly close an ambiguous provider attempt without dispatching it again.
+   */
+  public abandon<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      attemptID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "attemptID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      V2SessionRecoveryAbandonResponses,
+      V2SessionRecoveryAbandonErrors,
+      ThrowOnError
+    >({
+      url: "/api/session/{sessionID}/recovery/{attemptID}/abandon",
+      ...options,
+      ...params,
+    })
+  }
 }
 
 export class Revert extends HeyApiClient {
@@ -5912,6 +6039,11 @@ export class Session3 extends HeyApiClient {
       ...options,
       ...params,
     })
+  }
+
+  private _recovery?: Recovery
+  get recovery(): Recovery {
+    return (this._recovery ??= new Recovery({ client: this.client }))
   }
 
   private _revert?: Revert

@@ -73,6 +73,8 @@ export type ScenarioContext = {
   todos: (sessionID: SessionID, todos: TodoInfo[]) => Effect.Effect<void>
   /** Insert durable V2 background job rows (the observation surface's truth). */
   jobs: (input: JobSeed[]) => Effect.Effect<void>
+  /** Insert durable V2 provider-attempt rows for continuation-recovery route scenarios. */
+  recovery: (input: RecoverySeed[]) => Effect.Effect<void>
   worktree: (input?: { name?: string }) => Effect.Effect<Worktree.Info>
   worktreeRemove: (directory: string) => Effect.Effect<void>
   llmText: (value: string) => Effect.Effect<void>
@@ -147,5 +149,25 @@ export type JobSeed = {
   error?: string
   startedAt?: number
   completedAt?: number
+  runtimeID?: string
+  fence?: number
+  heartbeatAt?: number | null
+  leaseUntil?: number | null
+}
+export type RecoverySeed = {
+  id: string
+  sessionID: SessionID
+  status: "prepared" | "dispatched" | "succeeded" | "failed" | "abandoned"
+  recovery?: "retry_ready" | "decision_required" | "auto_retrying" | "abandoned"
+  runtimeID?: string
+  fence?: number
+  step?: number
+  retryCount?: number
+  preparedAt?: number
+  dispatchedAt?: number
+  completedAt?: number
+  nextRetryAt?: number
+  error?: string
+  leaseUntil?: number | null
 }
 export type MessageSeed = { info: SessionV1.User; part: SessionV1.TextPart }

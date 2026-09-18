@@ -1246,6 +1246,144 @@ const scenarios: Scenario[] = [
     }))
     .status(404, undefined, "status"),
   http.protected
+    .get("/api/session/{sessionID}/recovery", "v2.session.recovery.list")
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Recovery status session" })
+        yield* ctx.recovery([
+          {
+            id: "attempt_httpapi_ambiguous",
+            sessionID: session.id,
+            status: "abandoned",
+            recovery: "decision_required",
+            runtimeID: "runtime_previous",
+            step: 1,
+            error:
+              "The process ended after provider dispatch began; the provider outcome is unknown and was not retried automatically.",
+          },
+        ])
+        return session
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/api/session/{sessionID}/recovery", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(
+      200,
+      (body, ctx) => {
+        object(body)
+        array(body.data)
+        check(
+          body.data.some((attempt) => isRecord(attempt) && attempt.id === "attempt_httpapi_ambiguous"),
+          "recovery list should include the durable attempt",
+        )
+        const attempt = body.data.find((value) => isRecord(value) && value.id === "attempt_httpapi_ambiguous")
+        check(isRecord(attempt) && attempt.recovery === "decision_required", "ambiguous recovery should be visible")
+        check(isRecord(attempt) && attempt.session_id === ctx.state.id, "recovery rows should carry the session owner")
+      },
+      "status",
+    ),
+  http.protected
+    .post("/api/session/{sessionID}/recovery/{attemptID}/retry", "v2.session.recovery.retry.confirmation-required")
+    .mutating()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Recovery confirmation session" })
+        yield* ctx.recovery([
+          {
+            id: "attempt_httpapi_confirmation",
+            sessionID: session.id,
+            status: "abandoned",
+            recovery: "decision_required",
+            runtimeID: "runtime_previous",
+            step: 1,
+          },
+        ])
+        return session
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/api/session/{sessionID}/recovery/{attemptID}/retry", {
+        sessionID: ctx.state.id,
+        attemptID: "attempt_httpapi_confirmation",
+      }),
+      headers: ctx.headers(),
+      body: {},
+    }))
+    .status(409),
+  http.protected
+    .post("/api/session/{sessionID}/recovery/{attemptID}/retry", "v2.session.recovery.retry")
+    .mutating()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Recovery retry session" })
+        yield* ctx.recovery([
+          {
+            id: "attempt_httpapi_retry",
+            sessionID: session.id,
+            status: "abandoned",
+            recovery: "decision_required",
+            runtimeID: "runtime_previous",
+            step: 1,
+          },
+        ])
+        return session
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/api/session/{sessionID}/recovery/{attemptID}/retry", {
+        sessionID: ctx.state.id,
+        attemptID: "attempt_httpapi_retry",
+      }),
+      headers: ctx.headers(),
+      body: { confirmAmbiguous: true },
+    }))
+    .json(
+      200,
+      (body) => {
+        object(body)
+        check(isRecord(body.data) && body.data.id === "attempt_httpapi_retry", "retry should return the attempt")
+        check(isRecord(body.data) && body.data.status === "prepared", "retry should return prepared state")
+      },
+      "status",
+    ),
+  http.protected
+    .post("/api/session/{sessionID}/recovery/{attemptID}/abandon", "v2.session.recovery.abandon")
+    .mutating()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Recovery abandon session" })
+        yield* ctx.recovery([
+          {
+            id: "attempt_httpapi_abandon",
+            sessionID: session.id,
+            status: "abandoned",
+            recovery: "decision_required",
+            runtimeID: "runtime_previous",
+            step: 1,
+          },
+        ])
+        return session
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/api/session/{sessionID}/recovery/{attemptID}/abandon", {
+        sessionID: ctx.state.id,
+        attemptID: "attempt_httpapi_abandon",
+      }),
+      headers: ctx.headers(),
+    }))
+    .json(
+      200,
+      (body) => {
+        object(body)
+        check(isRecord(body.data) && body.data.id === "attempt_httpapi_abandon", "abandon should return the attempt")
+        check(isRecord(body.data) && body.data.recovery === "abandoned", "abandon should be visible")
+      },
+      "status",
+    ),
+  http.protected
     .get("/api/job", "v2.job.list")
     .seeded((ctx) =>
       Effect.gen(function* () {
@@ -1364,6 +1502,67 @@ const scenarios: Scenario[] = [
         object(body)
         check(isRecord(body.data) && body.data.id === "job_httpapi_single", "job get should return the seeded row")
         check(isRecord(body.data) && body.data.status === "interrupted", "recovered rows observe as interrupted")
+      },
+      "status",
+    ),
+  http.protected
+    .post("/api/job/{jobID}/cancel", "v2.job.cancel")
+    .mutating()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Cancelable job session" })
+        yield* ctx.jobs([{ id: "job_httpapi_cancel", status: "running", sessionID: session.id, startedAt: 100 }])
+        return undefined
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/api/job/{jobID}/cancel", { jobID: "job_httpapi_cancel" }),
+      headers: ctx.headers(),
+    }))
+    .json(
+      200,
+      (body) => {
+        object(body)
+        check(isRecord(body.data) && body.data.id === "job_httpapi_cancel", "cancel should return the durable row")
+        check(body.requested === true, "a live lease should produce a cancellation request")
+        check(body.stale_owner === false, "a live lease should not be reported stale")
+      },
+      "status",
+    ),
+  http.protected
+    .post("/api/job/{jobID}/cancel", "v2.job.cancel.stale-owner")
+    .mutating()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const warmed = yield* ctx.api({ method: "GET", path: "/api/job?limit=1" })
+        check(warmed.status === 200, `job route warm-up failed: ${warmed.status}: ${warmed.text}`)
+        const session = yield* ctx.session({ title: "Stale cancel job session" })
+        yield* ctx.jobs([
+          {
+            id: "job_httpapi_stale_cancel",
+            status: "running",
+            sessionID: session.id,
+            startedAt: 100,
+            runtimeID: "runtime_dead",
+            fence: 4,
+            heartbeatAt: 0,
+            leaseUntil: 0,
+          },
+        ])
+        return undefined
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/api/job/{jobID}/cancel", { jobID: "job_httpapi_stale_cancel" }),
+      headers: ctx.headers(),
+    }))
+    .json(
+      200,
+      (body) => {
+        object(body)
+        check(isRecord(body.data) && body.data.status === "interrupted", "stale cancel should fence the durable row")
+        check(body.requested === false, "stale cancel should not report a live request")
+        check(body.stale_owner === true, "stale cancel should report the fenced owner")
       },
       "status",
     ),

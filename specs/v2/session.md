@@ -101,12 +101,17 @@ Ambient project discovery canonicalizes and contains traversal within the projec
 Current Context Epoch follow-ups:
 
 - Add configured, remote, and nested instruction sources with explicit precedence and removal semantics.
-- Add durable post-crash continuation recovery for promoted or provider-dispatched work.
 - Add explicit manual compaction on top of automatic request-budget compaction.
 - Add operational metrics for observation latency, unavailable sources, contention, baseline size, and chronological-update growth.
 - Consider watcher-backed per-file caching only if measurements show direct safe-boundary observation is too expensive.
 - Expose plugin-defined Context Sources only after plugin reload and scoped cleanup semantics are designed.
-- Add clustered Session execution ownership and stale-runtime fencing.
+
+Post-crash continuation recovery and clustered Session ownership are now
+implemented outside the Context Epoch boundary. Provider-attempt preparation
+versus dispatch ambiguity, bounded retry/abandon policy, startup discovery,
+Session leases, and stale-owner fencing are specified in
+`specs/v2/session-recovery.md`; Context Epoch initialization remains a normal
+per-turn operation after a recovered Session acquires its execution lease.
 
 ## Automatic Compaction
 

@@ -23,6 +23,7 @@ export const BackgroundJobInfo = Schema.Struct({
   output: Schema.optional(Schema.String),
   error: Schema.optional(Schema.String),
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  cancel_requested_at: Schema.optional(Schema.Number),
 }).annotate({ identifier: "BackgroundJobInfo" })
 
 export const JobListQuery = Schema.Struct({
@@ -58,9 +59,27 @@ export const JobGroup = HttpApiGroup.make("server.job")
       }),
     ),
   )
+  .add(
+    HttpApiEndpoint.post("job.cancel", "/api/job/:jobID/cancel", {
+      params: { jobID: Schema.String },
+      success: Schema.Struct({
+        data: BackgroundJobInfo,
+        requested: Schema.Boolean,
+        stale_owner: Schema.Boolean,
+      }),
+      error: JobNotFoundError,
+    }).annotateMerge(
+      OpenApi.annotations({
+        identifier: "v2.job.cancel",
+        summary: "Request cancellation of a background job",
+        description:
+          "Request cancellation through the durable owner lease. A live owner acknowledges on its next heartbeat; an expired owner is fenced and reported interrupted rather than falsely reported as stopped.",
+      }),
+    ),
+  )
   .annotateMerge(
     OpenApi.annotations({
       title: "jobs",
-      description: "Read-only observation of durable V2 background jobs.",
+      description: "Observation and lease-fenced cancellation of durable V2 background jobs.",
     }),
   )

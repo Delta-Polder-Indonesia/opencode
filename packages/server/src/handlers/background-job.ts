@@ -42,5 +42,24 @@ export const JobHandler = HttpApiBuilder.group(Api, "server.job", (handlers) =>
           return { data: info }
         }),
       )
+      .handle(
+        "job.cancel",
+        Effect.fn(function* (ctx) {
+          const result = yield* BackgroundJobStore.requestCancel(database.db, ctx.params.jobID)
+          if (result._tag === "NotFound") {
+            return yield* Effect.fail(
+              new JobNotFoundError({
+                jobID: ctx.params.jobID,
+                message: `Background job not found: ${ctx.params.jobID}`,
+              }),
+            )
+          }
+          return {
+            data: result.info,
+            requested: result._tag === "Requested",
+            stale_owner: result._tag === "StaleOwner",
+          }
+        }),
+      )
   }),
 )
