@@ -222,6 +222,159 @@ Langkah berikutnya:
 
 ---
 
+## Update progres (sesi `arena/01a0b5b5-opencode`, 2026-09-19)
+
+Target dikonfirmasi: **Windows x64** (dengan pertimbangan utama target itu,
+tetapi tidak teruji di sini). Sesi ini mengerjakan **Tahap 0** dan **Tahap 1A**
+saja, sesuai cakupan yang disepakati.
+
+### Tahap 0 — Persiapan dan baseline
+
+Status: **selesai** (berkas baseline terverifikasi; pengujian Windows hijau
+belum tersedia, jadi bukan "lulus penuh", melainkan terverifikasi sejauh yang
+bisa dijalankan di sandbox).
+
+- **Target OS/arsitektur:** Windows x64 dipakai sebagai target awal (pilihan
+  user), tetapi build/uji Windows asli **tidak dapat dijalankan** di sandbox ini.
+- **Bun & dependensi:** `bun 1.3.14` dipasang; `NODE_TLS_REJECT_UNAUTHORIZED=0
+  bun install` berhasil (tarball `ghostty-web` butuh env ini; kegagalan
+  node-gyp `tree-sitter-powershell` transient, retry ok).
+- **Baseline typecheck + test (komit `abc2353`, PR #14 ter-merge):**
+  - typecheck scoped `packages/core` + `packages/protocol` + `packages/server`
+    + `packages/sdk/js` bersih; typecheck full-repo tidak dijalankan (OOM).
+  - `packages/core`: **1148 pass / 0 fail**.
+  - httpapi-exercise: **220 pass / 0 fail** (dengan `OPENCODE_MODELS_PATH`).
+  - `packages/app` unit (termasuk browser tests): semula **722 pass / 2 fail**
+    — 2 kegagalan itu **pre-existing**, bukan regresi, dan berasal dari
+    `src/i18n/parity.test.ts` yang mengimpor `../../../desktop/src/renderer/
+    i18n/{locale}.ts` yang belum ada (paket desktop memang belum dibuat saat
+    itu). Akar masalah ini dihapus tuntas di Tahap 1A (lihat bawah): kini
+    **724 pass / 0 fail**.
+- **Benchmark production untuk session/timeline:** tidak ada perubahan
+  session/timeline pada sesi ini sehingga baseline benchmark tambahan tidak
+  diperlukan (aturan `packages/app/src/i18n/...` / `packages/app/AGENTS.md`
+  dipenuhi dengan tidak menyentuh kode session/timeline).
+- **Verifikasi folder picker + thinking ringkas (PR #14):** diperiksa lewat
+  `git show abc2353` — folder picker memakai jalur native (desktop) vs server
+  (remote) di `packages/app/src/components/directory-picker*`, behavior
+  reasoning ringkas di `packages/session-ui/src/components/reasoning-disclosure.ts`
+  dan `message-part.tsx`. Dipercaya dari kode + test terkait yang sudah ada;
+  bukan pengujian runtime desktop.
+
+### Tahap 1A — Kerangka dan integrasi UI
+
+Status: **sebagian selesai / sebagian terblokir** (implementasi ditulis,
+typecheck lolos, test unit lolos, renderer+preload ter-bundle; build main
+lengkap dan build installer Windows **terblokir** oleh batasan sandbox —
+bukan klaim siap rilis).
+
+Paket baru `packages/desktop` (`@opencode-ai/desktop`, versi 1.18.31, Electron
+42.3.3, electron-vite 5, electron-builder 26). Implementasi diadaptasi dari
+arsitektur desktop upstream (`anomalyco/opencode`) ke kontrak fork ini.
+
+- **Main process** (`src/main/`): `index.ts` (single-instance lock, deep-link,
+  alokasi port loopback, password sidecar `randomUUID`, deferred `serverReady`,
+  wiring menu/updater/IPC), `server.ts` (spawn sidecar via `utilityProcess.fork`,
+  health check `/api/health` & `/global/health` dengan Basic auth, timeout start
+  60s / stop 6s), `sidecar.ts` (utility-process yang `import("virtual:opencode-server")`),
+  plus modul pendukung: `constants`, `store-keys`, `store`, `store-cleanup`,
+  `native-translations`, `external-url`, `window-state`, `window-registry`,
+  `install-state`, `logging`, `shell-env`, `attachment-picker`, `draft-store`,
+  `initialization`, `updater-controller`, `updater-subscriptions`, `updater`,
+  `migrate`, `onboarding`, `unresponsive`, `apps`, `debug`, `menu`,
+  `desktop-menu-actions`, `windows`.
+- **WSL (Windows-specific, port dari upstream):** `src/main/wsl/{startup,policy,
+  runtime,sidecar,servers,ipc}.ts` + test `servers.test.ts`. Kontroler/alokasi
+  port/auth env mengikuti rancangan upstream (loopback, `OPENCODE_CLIENT=desktop`,
+  `OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER=true`, `@lydell/node-pty`
+  dipersempit per platform). Di `index.ts`, handler WSL hanya aktif di `win32`;
+  di platform lain handler mengembalikan state "windows-only".
+- **Preload** (`src/preload/`): `contextBridge` mengekspos `window.api`
+  (store/draft/picker/window/updater/WSL subscription) dengan tipe penuh
+  `ElectronAPI`; `getPathForFile` lewat `webUtils` (sesuai Electron modern).
+- **Renderer** (`src/renderer/`): membangun `Platform` desktop dari `window.api`
+  dan membungkus UI existing `AppInterface` + `AppBaseProviders` dalam
+  `PlatformProvider` — **tidak menduplikasi app dan tidak membungkus situs
+  upstream**. Termasuk `i18n/` (61 kamus lokal dari app + fallback + `en`),
+  `onboarding.tsx`, `webview-zoom`, `window-fullscreen`, `initialization`,
+  `wsl/connections.ts` (+ test), `index.html`, `styles.css`. Keamanan dari awal:
+  `nodeIntegration: false`, `contextIsolation: true`, sandbox renderer,
+  IPC divalidasi (sender frame, string, path, budget attachment, native
+  translation bundle) — lihat `appendSwitch`/opsi `webPreferences` di `windows.ts`.
+- **Build config**: `electron.vite.config.ts` (main input `index.ts`+`sidecar.ts`,
+  banner shim CommonJS, narrow `@lydell/node-pty`, resolve `virtual:opencode-server`
+  → `../opencode/dist/node/node.js`, copy wasm ke `out/main/chunks`; preload CJS;
+  renderer via `@opencode-ai/app/vite` + `publicDir ../../../app/public`).
+- **Scripts**: `scripts/predev.ts`, `prebuild.ts`, `copy-icons.ts`,
+  `copy-metainfo.ts`, `utils.ts`, `prepare.ts` (build server Node ke `dist/node`,
+  bukan mengunduh Rust CLI — fork ini backend-nya server Node). 
+- **Builder**: `electron-builder.config.ts` (NSIS win, dmg/zip mac, AppImage/deb/rpm
+  linux, signing Windows via `../../script/sign-windows.ps1`, publish github
+  `Delta-Polder-Indonesia/opencode`). Sumber daya: `resources/entitlements.plist`,
+  `resources/linux/opencode-desktop.desktop`, plus ikon per channel di `icons/`
+  (mark OpenCode dari `packages/ui/src/components/logo.tsx`; warna brand mengikuti
+  sampling ikon upstream: dev `#4F85F4/#77AEFF`, prod `#52514D/#252525`, beta
+  `#969695/#C8C8C8`; ICO multi-res disalin ke `resources/icons/` oleh
+  `copy-icons.ts`). `packages/opencode/dist/node` (di-bundle) bersifat generated
+  dan diabaikan via `.gitignore`. Tidak ada ikon `x86_64-pc-windows-msvc`
+  karena fork tidak punya build binary Rust.
+
+**Verifikasi (perintah dan hasil):**
+
+- `bun run typecheck` di `packages/desktop` → **bersih** (tsgo, `-b`).
+- `bun test` di `packages/desktop` (dengan `ELECTRON_OVERRIDE_DIST_PATH`
+  di lingkungan ini) → **15 pass / 0 fail** (12 uji kontroler WSL + 3 uji
+  connections). Tanpa env itu, `bun test` gagal hanya karena require `electron`
+  memeriksa binary yang tidak terunduh; logika test-nya sendiri lolos.
+- `packages/app` `src/i18n/parity.test.ts` → **5 pass / 0 fail** — 2 kegagalan
+  lama (parity) hilang. Unit+browser app kini **724 pass / 0 fail**.
+- `bun run build` (electron-vite) → `prebuild` sukses (ikon + build `dist/node`);
+  renderer+preload berhasil **ter-bundle penuh** (`main-*.js` ~5.7MB + aset + 61
+  kamus lazy + `preload/index.js` + `index.html`). Build **main** gagal
+  **OOM (exit 137/134)** saat Rollup menelan `dist/node/node.js` 33MB / 874k
+  baris — batas RAM sandbox ~3.9GB tanpa swap; bukan kesalahan konfigurasi
+  (konfigurasi sama persis dengan upstream yang build-nya dijalankan di runner
+  CI yang lebih besar). Dicoba: `--max-old-space-size`, `build.minify:false`,
+  chunking — semuanya tetap OOM.
+
+**Kendala/risiko:**
+
+- Sandbox memblokir unduhan binary Electron (CDN `release-assets.githubusercontent.com`
+  & mirror lain; `@electron/get` gagal) → dev/launch/package UI **tidak bisa
+  dijalankan** di sini. `install-electron` gagal di sini, tapi bin itu tersedia
+  dari dependensi `electron` (postinstall normal di mesin biasa/CI).
+- `@opencode-ai/script` membaca `.github/TEAM_MEMBERS` saat import; fork ini
+  tidak membawanya → build `dist/node` gagal. Ditambahkan placeholder ONLY COMMENT
+  (tanpa memalsukan username; parser melewatkan baris `#`), jadi build dapat
+  berjalan tanpa akses jaringan.
+- Fixture models.dev committed (`packages/opencode/test/tool/fixtures/models-api.json`,
+  ~4.9MB) dipakai sebagai `MODELS_DEV_API_JSON` offline oleh `buildNodeServer()`;
+  `OPENCODE_MODELS_PATH` override tetap berlaku.
+- CPU/RAM: hanya boleh satu proses berat per waktu; main-process build OOM
+  bersifat sandbox-only.
+
+**Keputusan:**
+
+- Tidak mengklaim installer siap rilis. Tahap 1D (installer Windows) dan sebagian
+  1B (runtime lifecycle) masih perlu diverifikasi di lingkungan Windows asli/CI.
+- Renderer WSL hanya aktif di `os === "windows"`; surface preload `wslServers`
+  kini punya handler IPC nyata (gaps ditutup dengan meng-port modul WSL upstream).
+- Ikon digenerate sekarang (tanpa membuat ikon besar dimasukkan ke Git).
+- Konsisten dengan fork: backend desktop = server Node (`dist/node/node.js`),
+  bukan binary Rust CLI seperti upstream.
+
+**Langkah berikutnya:**
+
+1. Selesaikan verifikasi main-process build + installer di lingkungan yang lebih
+   besar (CI `windows-latest` misalnya) — di sini terblokir OOM/baru egress.
+2. Jalankan runtime desktop di Windows asli (launch dari ikon, pilih folder,
+   chat, terminal, tutup, buka ulang) sebagai penerimaan Tahap 1B/1D.
+3. Setelah build main hijau, aktifkan `package:win` dan uji hasil NSIS.
+4. Pertimbangkan item 1B tersisa (kepemilikan proses, recovery crash) dan 1C
+   (audit penuh izin agen) sebagai gate sebelum installer dirilis.
+
+---
+
 ## Arsip catatan teknis sebelumnya
 
 Bagian di bawah dipertahankan sebagai riwayat. Status dan hasil pengujian di
