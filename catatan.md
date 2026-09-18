@@ -644,6 +644,29 @@ Verifikasi: `bun test src` **93 pass / 0 fail** (3 tes regresi `mainBundleDir`),
 bundel hasil build tidak lagi memuat path absolut build-time, oxlint dan prettier
 bersih.
 
+#### 2026-09-19 — Lanjutan: preload wajib berpath absolut
+
+Perbaikan `__dirname` menghilangkan ENOENT, lalu muncul kegagalan berikutnya:
+
+```
+ERROR:web_contents_preferences.cc:300] preload script must have absolute path.
+```
+
+**Sebab.** `mainBundleDir()` menurunkan direktori dari `require.main.filename`,
+dan nilai itu adalah apa pun yang ada di baris perintah. `script/dev.ts`
+meluncurkan `electron dist/main/index.cjs` — relatif — sehingga path preload ikut
+relatif, dan Electron menolaknya mentah-mentah.
+
+**Perbaikan, dua lapis.** `mainBundleDir()` kini selalu mengembalikan path
+absolut lewat `resolve()`, sehingga jaminan itu ada di satu tempat dan tidak
+bergantung pada cara pemanggilan. Sekaligus `script/dev.ts` meluncurkan Electron
+dengan path absolut, memperbaiki sumbernya, bukan hanya gejalanya.
+
+Verifikasi: `bun test src` **95 pass / 0 fail** (2 tes regresi baru untuk entry
+relatif dan absolut). Dibuktikan pada modul hasil build dengan meniru persis
+kasus yang gagal (`filename: "dist/main/index.cjs"`, cwd paket): hasilnya
+`/repo/packages/desktop/dist/preload/index.cjs`, absolut.
+
 **Langkah berikutnya**
 
 1. Kompilasi backend untuk `windows-x64` dan uji `script/backend.ts --target windows-x64`.

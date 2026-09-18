@@ -1,7 +1,7 @@
-import { dirname, join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 
 /**
- * Directory of the running main-process bundle.
+ * Directory of the running main-process bundle, always absolute.
  *
  * `__dirname` cannot be used here. Bun's bundler substitutes it at build time
  * with the absolute path of the *source* file, so a bundle built in
@@ -12,14 +12,16 @@ import { dirname, join } from "node:path"
  *
  * `require.main.filename` survives bundling because it is resolved at runtime,
  * and for the Electron main process it is the entry point Electron launched.
+ * That entry can be whatever was on the command line, so it may be relative --
+ * and Electron rejects a relative `preload` path outright. Resolving here keeps
+ * that guarantee in one place instead of at each call site.
  */
-export function mainBundleDir(main: NodeJS.Module | undefined = require.main) {
+export function mainBundleDir(main: NodeJS.Module | undefined = require.main, cwd = process.cwd()) {
   const entry = main?.filename
-  if (entry) return dirname(entry)
   // Electron always sets require.main for the main process; if it is somehow
-  // absent, the current working directory is a better guess than a stale
-  // build-time path.
-  return process.cwd()
+  // absent, the working directory is a better guess than a stale build-time path.
+  if (!entry) return resolve(cwd)
+  return resolve(cwd, dirname(entry))
 }
 
 /** Executable name of the bundled backend, per platform. */

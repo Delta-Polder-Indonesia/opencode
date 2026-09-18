@@ -111,7 +111,10 @@ if ((await build.exited) !== 0) {
   process.exit(1)
 }
 
-const electron = Bun.spawn(["bun", "x", "electron", "dist/main/index.cjs"], {
+// Absolute: Electron refuses a relative preload path, and the preload path is
+// derived from the entry point it was launched with.
+const mainBundle = join(root, "dist", "main", "index.cjs")
+const electron = Bun.spawn(["bun", "x", "electron", mainBundle], {
   cwd: root,
   stdout: "inherit",
   stderr: "inherit",

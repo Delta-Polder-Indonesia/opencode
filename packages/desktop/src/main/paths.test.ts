@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import { backendBinaryName, backendBinaryPath, mainBundleDir } from "./paths"
 
 describe("backendBinaryName", () => {
@@ -62,5 +62,21 @@ describe("mainBundleDir", () => {
 
   test("falls back to the working directory when there is no entry point", () => {
     expect(mainBundleDir(undefined)).toBe(process.cwd())
+  })
+
+  // Electron rejects a relative preload path outright ("preload script must
+  // have absolute path"), and the entry point is whatever was on the command
+  // line -- `electron dist/main/index.cjs` yields a relative filename.
+  test("returns an absolute path even when launched with a relative entry", () => {
+    const dir = mainBundleDir({ filename: join("dist", "main", "index.cjs") } as NodeJS.Module, join("/srv", "app"))
+    expect(dir).toBe(join("/srv", "app", "dist", "main"))
+    expect(isAbsolute(dir)).toBe(true)
+  })
+
+  test("leaves an already absolute entry untouched", () => {
+    const entry = join("/opt", "OpenCode", "dist", "main", "index.cjs")
+    expect(mainBundleDir({ filename: entry } as NodeJS.Module, join("/somewhere", "else"))).toBe(
+      join("/opt", "OpenCode", "dist", "main"),
+    )
   })
 })
