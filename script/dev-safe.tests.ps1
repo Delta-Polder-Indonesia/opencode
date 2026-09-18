@@ -368,6 +368,7 @@ foreach ($item in $script:results) {
   Write-Host ("  {0,-5} {1} {2}" -f $item.Status, $item.Name, $(if ($item.Detail) { "($($item.Detail))" } else { "" })) -ForegroundColor $color
 }
 
+$summaryLines = $null
 if ($env:GITHUB_STEP_SUMMARY) {
   $lines = @()
   $lines += "## Uji dev-safe.ps1 (Windows)"
@@ -386,7 +387,17 @@ if ($env:GITHUB_STEP_SUMMARY) {
   }
   $lines += ""
   $lines += "**$passed lulus, $failed gagal, $skipped dilewati.**"
-  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ($lines -join "`n")
+  $summaryLines = $lines -join "`n"
+  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summaryLines
+}
+
+# Ringkasan juga disimpan sebagai berkas supaya bisa diunduh/diarsipkan.
+if ($summaryLines) {
+  $summaryRoot = if ($env:GITHUB_WORKSPACE) { $env:GITHUB_WORKSPACE } else { [System.IO.Path]::GetTempPath() }
+  $summaryFile = Join-Path $summaryRoot "dev-safe-summary.md"
+  Set-Content -Path $summaryFile -Value $summaryLines -Encoding UTF8
+  Write-Host ""
+  Write-Host "Ringkasan ditulis ke: $summaryFile" -ForegroundColor DarkGray
 }
 
 Write-Host ""

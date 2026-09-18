@@ -153,14 +153,16 @@ jobs:
           Write-Host "== netstat setelah percobaan =="
           netstat -ano | Select-String ":$env:E2E_PORT" | ForEach-Object { Write-Host $_.Line.Trim() }
 
-      - name: Lampirkan bukti kegagalan
-        if: failure()
+      - name: Lampirkan ringkasan hasil
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dev-safe-failures
-          path: dev-safe-failures.txt
+          name: dev-safe-summary
+          path: |
+            dev-safe-summary.md
+            dev-safe-failures.txt
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 14
 
       - name: Ringkasan hasil
         if: always()
