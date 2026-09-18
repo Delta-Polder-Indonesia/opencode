@@ -193,6 +193,104 @@ dari package app).
 - Generated `packages/opencode/config.json` was removed; `openapi.json` and
   `bun.lock` remain uncommitted per the standing constraints.
 
+## Alat bantu dev Windows (sesi `arena/01a0b41d-opencode`, 2026-09-18)
+
+Bukan bagian dari 5 item prioritas — ini kebutuhan operasional pemakaian
+sehari-hari (`opencode web` / `serve`) di Windows:
+
+- `script/dev-safe.ps1` — runner PowerShell. Selalu meminta
+  `OPENCODE_SERVER_PASSWORD` (prompt tanpa echo, tidak masuk riwayat),
+  membind `127.0.0.1` kecuali `-AllowLan`, membersihkan env var setelah
+  server berhenti, dan punya `-Verify` (mode periksa: apakah port
+  mendengarkan di `0.0.0.0` dan apakah autentikasi aktif / `401`).
+  Opsi baru: `-WithDevUi` (+ `-DevUiPort`, default 3000) menjalankan server
+  di belakang lalu Vite dev UI di `127.0.0.1` (menimpa `host: "0.0.0.0"`
+  di `packages/app/vite.config.ts`), dan `-FromSource` untuk menjalankan
+  checkout ini lewat `bun`.
+- `script/dev-safe.cmd` — pembungkus klik-dua-kali untuk script di atas.
+
+CI-nya: `.github/workflows/dev-safe-windows.yml` (job `windows-latest`, dipicu
+`workflow_dispatch` dengan input `run_e2e`, atau push yang menyentuh file-file
+di atas). Hasil uji tampil sebagai tabel di step summary halaman run, plus
+artifact `dev-safe-summary` (14 hari) dan `::error` per kegagalan. Harness-nya
+`script/dev-safe.tests.ps1`: 7 uji perilaku memakai server HTTP palsu
+(TcpListener: 401 tanpa header Authorization, 200 dengan header) + 1 uji e2e
+memakai server opencode sungguhan dari npm. Run pertama yang hijau:
+`35341492000`.
+
+Repo kini **publik** (2026-09-18). Konsekuensinya: menit Actions standard-runner
+gratis, jadi workflow dipicu juga oleh `pull_request` dan boleh memuat uji e2e
+dan uji `-WithDevUi`. Audit isi repo saat menjadi publik: tidak ada kredensial
+asli (yang cocok dengan pola rahasia hanya fixture tes, mis. `sk-1234...` dan
+`AKIAIOSFODNN7EXAMPLE`); TIDAK ada `.env`/kunci privat/berkas >5MB; commit
+trailer `Co-authored-by` adalah artefak hook sandbox, bukan rahasia. Satu
+kebocoran nyata dari kerjaan sesi ini: contoh IP LAN pribadi user tertulis di
+`script/dev-safe.ps1` (kini `<IP-PC>`) dan ikut tersimpan di blob commit lama,
+plus disebut juga di pesan satu commit. **Riwayat branch sudah ditulis ulang**
+dengan resep ini:
+
+```bash
+printf 'IP-LAMA==><IP-PC>\n' > /tmp/rep.txt
+git filter-repo --refs 'main..arena/01a0b41d-opencode' \
+  --replace-text /tmp/rep.txt --replace-message /tmp/rep.txt
+```
+
+Pelajaran penting (mahal, sudah dibuktikan dua kali di sesi ini):
+
+- **Rentang `--refs main..<branch>` itu wajib.** Tanpa itu filter-repo menulis
+  ulang SELURUH riwayat — ribuan commit upstream ikut berhash baru, `main`
+  bergeser (`9521ccf` → hash lain), merge-base dengan `main` di GitHub hilang,
+  dan PR akan terlihat seperti menambahkan seluruh isi repo. Riwayat upstream
+  yang sudah publik memang tidak boleh ditulis ulang; jangan pernah
+  mem-force-push `main`.
+- Dengan rentang itu: `main` tetap `9521ccf`, merge-base utuh, hanya commit
+  branch yang berubah.
+- Verifikasi setelah rewrite: `git merge-base main HEAD` == `9521ccf`,
+  `git log --all -S '<IP-LAMA>'` kosong, `git log --all --format=%s%n%b | grep -c <IP>`
+  = 0, dan **`git rev-parse HEAD^{tree}` sama dengan sebelum rewrite** (isi
+  berkas tidak berubah, hanya riwayat).
+- Konsekuensi: semua SHA commit branch berubah → force-push dengan
+  `--force-with-lease`; siapa pun yang sudah clone branch ini harus fetch ulang.
+- `git bundle create` untuk backup bisa bersifat *thin* (menyimpan
+  prerequisites) sehingga tidak bisa di-fetch ulang kalau objek aslinya sudah
+  dipangkas — simpan salinan direktori repo atau biarkan remote sebagai sumber
+  pemulihan.
+
+Belum aktif dan sebaiknya dinyalakan di Settings: Dependabot alerts
+(terkonfirmasi mati) dan secret protection/push protection.
+
+Tiga jebakan PowerShell yang ditemukan di sesi ini (semuanya terbukti lewat CI,
+bukan lewat pembacaan kode):
+
+1. **`$error` variabel otomatis read-only.** `foreach ($error in $parseErrors)`
+   membuat step CI mati tanpa sempat melaporkan error apa pun. Sekarang ada step
+   yang menolak `$error/$true/$false/$host/$input/$args` sebagai variabel loop.
+2. **`"$var:"` di dalam string adalah parse error** ("`:` was not followed by a
+   valid variable name character"). Pakai `${var}:`. Ditemukan di baris 424
+   `dev-safe.tests.ps1` dan pada `-u $User:PASSWORD` di `dev-safe.ps1`.
+3. **PowerShell meratakan array satu elemen** yang dikembalikan fungsi menjadi
+   string, sehingga `$x[0]` mengambil **huruf pertama** isi string ('D' dari
+   `D:\...`). Ini membuat `-WithDevUi` gagal untuk semua pengguna Windows.
+   `Resolve-ViteCommand` kini mengembalikan objek `{ File, Args }`.
+
+**Temuan penting dari CI (tidak terlihat dari pembacaan kode):** di runner
+Windows, `Get-Command opencode` mengembalikan shim **`.ps1`** dari npm
+(`C:\npm\prefix\opencode.ps1`), bukan `.cmd`/`.exe`. Shim `.ps1` berjalan di
+dalam sesi PowerShell pemanggil dan diakhiri `exit`, sehingga `dev-safe.ps1`
+langsung berhenti (exit 0) dan server tidak pernah hidup. `dev-safe.ps1`
+sekarang memilih `.exe`/`.cmd` lebih dulu lewat `Get-Command -All`; shim
+`curl.exe` juga diberi `--max-time`. Pelajaran umum: untuk shim npm di Windows,
+jangan pakai hasil `Get-Command` pertama begitu saja.
+
+Temuan yang perlu diketahui: `opencode attach <url>` (dan `run`) **belum ada**
+di fork ini — `packages/opencode/src/cli/cmd/` tidak punya `attach.ts`,
+sementara upstream `anomalyco/opencode` punya. Halaman docs
+`opencode.ai/docs/web/` bagian "Attaching a Terminal" karena itu tidak
+berlaku di fork ini. Bagian lain halaman itu (port/hostname/mdns/cors/
+password) sudah terverifikasi cocok, dengan satu detail tak terdokumentasi:
+mDNS hanya memaksa hostname `0.0.0.0` kalau `server.hostname` di config
+tidak diisi.
+
 ## Batasan sandbox yang HARUS diketahui sesi berikutnya
 
 - **RAM ~3.9GB, tanpa swap.** `bun run typecheck` di `packages/opencode`

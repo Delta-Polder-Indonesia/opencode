@@ -1,45 +1,19 @@
-<p align="center">
-  <a href="https://opencode.ai">
-    <picture>
-      <source srcset="packages/console/app/src/asset/logo-ornate-dark.svg" media="(prefers-color-scheme: dark)">
-      <source srcset="packages/console/app/src/asset/logo-ornate-light.svg" media="(prefers-color-scheme: light)">
-      <img src="packages/console/app/src/asset/logo-ornate-light.svg" alt="OpenCode logo">
-    </picture>
-  </a>
-</p>
+<h1 align="center">OpenCode</h1>
 <p align="center">The open source AI coding agent.</p>
 <p align="center">
-  <a href="https://opencode.ai/discord"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
   <a href="https://www.npmjs.com/package/opencode-ai"><img alt="npm" src="https://img.shields.io/npm/v/opencode-ai?style=flat-square" /></a>
-  <a href="https://github.com/anomalyco/opencode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/opencode/publish.yml?style=flat-square&branch=dev" /></a>
+  <a href="https://opencode.ai/discord"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
+  <a href="https://github.com/anomalyco/opencode"><img alt="Upstream" src="https://img.shields.io/badge/upstream-anomalyco%2Fopencode-blue?style=flat-square" /></a>
 </p>
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh.md">简体中文</a> |
-  <a href="README.zht.md">繁體中文</a> |
-  <a href="README.ko.md">한국어</a> |
-  <a href="README.de.md">Deutsch</a> |
-  <a href="README.es.md">Español</a> |
-  <a href="README.fr.md">Français</a> |
-  <a href="README.it.md">Italiano</a> |
-  <a href="README.da.md">Dansk</a> |
-  <a href="README.ja.md">日本語</a> |
-  <a href="README.pl.md">Polski</a> |
-  <a href="README.ru.md">Русский</a> |
-  <a href="README.bs.md">Bosanski</a> |
-  <a href="README.ar.md">العربية</a> |
-  <a href="README.no.md">Norsk</a> |
-  <a href="README.br.md">Português (Brasil)</a> |
-  <a href="README.th.md">ไทย</a> |
-  <a href="README.tr.md">Türkçe</a> |
-  <a href="README.uk.md">Українська</a> |
-  <a href="README.bn.md">বাংলা</a> |
-  <a href="README.gr.md">Ελληνικά</a> |
-  <a href="README.vi.md">Tiếng Việt</a>
-</p>
+> [!IMPORTANT]
+> **Catatan fork.** Repositori ini adalah fork tidak resmi dari
+> [anomalyco/opencode](https://github.com/anomalyco/opencode) (MIT) yang
+> dipelihara oleh **Delta Polder Indonesia**. Bukan produk resmi OpenCode dan
+> tidak berafiliasi dengan tim OpenCode. Untuk instalasi, dokumentasi, dan
+> dukungan umum, rujuk ke repositori upstream.
 
-[![OpenCode Terminal UI](packages/web/src/assets/lander/screenshot.png)](https://opencode.ai)
+[![OpenCode Desktop](screenshot-uk.png)](https://opencode.ai)
 
 ---
 
@@ -63,6 +37,76 @@ nix run nixpkgs#opencode           # or github:anomalyco/opencode for latest dev
 
 > [!TIP]
 > Remove versions older than 0.1.x before installing.
+
+### Menjalankan di Windows (aman)
+
+Server opencode di Windows **tidak punya autentikasi kecuali** kamu mengatur
+`OPENCODE_SERVER_PASSWORD`. Tanpa password, siapa pun yang bisa menjangkau
+portnya (mis. lewat Wi-Fi kantor) dapat menjalankan perintah shell dan mengubah
+file di PC-mu. Karena itu `packages/app/vite.config.ts` yang memakai
+`host: "0.0.0.0"` dan flag `--hostname 0.0.0.0` / `--mdns` harus dihindari
+kecuali benar-benar perlu.
+
+#### Cara cepat
+
+```cmd
+:: klik dua kali di Explorer, atau:
+script\dev-safe.cmd
+```
+
+`dev-safe.cmd` menjalankan `script\dev-safe.ps1` dengan setelan paling aman:
+bind `127.0.0.1`, meminta password lewat prompt (tidak terlihat saat diketik),
+lalu membersihkan password lagi setelah server berhenti.
+
+#### Opsi `script\dev-safe.ps1`
+
+| Perintah | Hasil |
+| --- | --- |
+| `powershell -ExecutionPolicy Bypass -File .\script\dev-safe.ps1` | Server + UI di satu port `4096`, hanya localhost |
+| `... -WithDevUi` | Server `:4096` + Vite dev UI `:3000` (hot reload), keduanya `127.0.0.1` |
+| `... -WithDevUi -DevUiPort 3001` | Sama, kalau port `3000` sedang dipakai |
+| `... -FromSource` | Menjalankan dari checkout ini lewat `bun` (jalankan `bun install` dulu) |
+| `... -Verify` | **Tidak** menjalankan apa pun; hanya melaporkan port ini terbuka ke jaringan atau tidak, dan autentikasi aktif atau tidak |
+| `... -AllowLan -Cors http://<IP-PC>:3000` | Membuka ke LAN (berisiko, disertai peringatan) |
+
+#### Tanpa script
+
+```powershell
+# 1) Masukkan password tanpa tampil di layar
+$sec = Read-Host "Password opencode" -AsSecureString
+$env:OPENCODE_SERVER_PASSWORD = [System.Net.NetworkCredential]::new("", $sec).Password
+
+# 2) Jalankan tanpa --hostname (default 127.0.0.1)
+opencode web --port 4096      # UI + API di satu port, buka http://localhost:4096
+# atau
+opencode serve --port 4096    # API saja, untuk dipakai bareng `bun run dev:web`
+
+# 3) Bersihkan setelah selesai
+Remove-Item Env:\OPENCODE_SERVER_PASSWORD
+```
+
+Username default `opencode` (ubah dengan `OPENCODE_SERVER_USERNAME`). Password
+tidak bisa disimpan di `opencode.json` — hanya lewat environment.
+
+#### Verifikasi cepat
+
+```powershell
+netstat -ano | findstr :4096                                    # harus 127.0.0.1:4096, bukan 0.0.0.0:4096
+curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:4096/global/health   # harus 401 tanpa login
+```
+
+Kunci hostname di `C:\Users\<nama>\.config\opencode\opencode.json` agar `--mdns`
+tidak pernah diam-diam membuka `0.0.0.0`:
+
+```json
+{ "server": { "hostname": "127.0.0.1", "port": 4096 } }
+```
+
+Butuh diakses dari HP/laptop lain? Jangan buka LAN — pakai SSH tunnel
+(`ssh -N -L 4096:127.0.0.1:4096 user@PC-INI`) atau VPN seperti Tailscale.
+
+> Alat di atas diuji otomatis di Windows oleh workflow
+> [`dev-safe (Windows)`](.github/workflows/dev-safe-windows.yml) pada setiap PR.
 
 ### Desktop App (BETA)
 
@@ -116,9 +160,21 @@ Learn more about [agents](https://opencode.ai/docs/agents).
 
 For more info on how to configure OpenCode, [**head over to our docs**](https://opencode.ai/docs).
 
+Dokumen internal fork ini:
+
+| Berkas | Isi |
+| --- | --- |
+| [`catatan.md`](./catatan.md) | Catatan handover antar-sesi: keputusan, temuan, dan batasan sandbox |
+| [`specs/v2/`](./specs/v2) | Spesifikasi kerja V2 (streaming, background jobs, session cursor, dsb.) |
+| `script/dev-safe.ps1` | Runner aman untuk Windows, plus `script/dev-safe.tests.ps1` untuk ujinya |
+
 ### Contributing
 
-If you're interested in contributing to OpenCode, please read our [contributing docs](./CONTRIBUTING.md) before submitting a pull request.
+Repositori ini tidak memuat panduan kontribusi upstream (`CONTRIBUTING.md`).
+Untuk berkontribusi ke proyek OpenCode, baca
+[panduan upstream](https://github.com/anomalyco/opencode/blob/dev/CONTRIBUTING.md).
+Untuk perubahan khusus fork ini, buka pull request ke branch `main` repositori
+ini — CI Windows (`script/dev-safe.*`) akan berjalan otomatis.
 
 ### Building on OpenCode
 
@@ -126,4 +182,4 @@ If you are working on a project that's related to OpenCode and is using "opencod
 
 ---
 
-**Join our community** [Discord](https://discord.gg/opencode) | [X.com](https://x.com/opencode)
+**Upstream** [opencode.ai](https://opencode.ai) | [Docs](https://opencode.ai/docs) | [Discord](https://discord.gg/opencode) | [X.com](https://x.com/opencode) | [GitHub](https://github.com/anomalyco/opencode)
