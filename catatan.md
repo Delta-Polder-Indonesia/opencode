@@ -264,9 +264,9 @@ bisa dijalankan di sandbox).
 ### Tahap 1A — Kerangka dan integrasi UI
 
 Status: **sebagian selesai / sebagian terblokir** (implementasi ditulis,
-typecheck lolos, test unit lolos, renderer+preload ter-bundle; build main
-lengkap dan build installer Windows **terblokir** oleh batasan sandbox —
-bukan klaim siap rilis).
+typecheck lolos, test unit lolos, **build electron-vite lengkap (exit 0)**,
+lifecycle server terverifikasi di harness; build installer Windows **terblokir**
+oleh batasan sandbox — bukan klaim siap rilis).
 
 Paket baru `packages/desktop` (`@opencode-ai/desktop`, versi 1.18.31, Electron
 42.3.3, electron-vite 5, electron-builder 26). Implementasi diadaptasi dari
@@ -302,9 +302,10 @@ arsitektur desktop upstream (`anomalyco/opencode`) ke kontrak fork ini.
   IPC divalidasi (sender frame, string, path, budget attachment, native
   translation bundle) — lihat `appendSwitch`/opsi `webPreferences` di `windows.ts`.
 - **Build config**: `electron.vite.config.ts` (main input `index.ts`+`sidecar.ts`,
-  banner shim CommonJS, narrow `@lydell/node-pty`, resolve `virtual:opencode-server`
-  → `../opencode/dist/node/node.js`, copy wasm ke `out/main/chunks`; preload CJS;
-  renderer via `@opencode-ai/app/vite` + `publicDir ../../../app/public`).
+  banner shim CommonJS, narrow `@lydell/node-pty`, **`external: ["virtual:opencode-server"]`**
+  + copy `dist/node/node.js` & wasm ke `out/main/chunks/node.js` — server **di-load
+  runtime**, tidak di-bundle ulang; preload CJS; renderer via `@opencode-ai/app/vite`
+  + `publicDir ../../../app/public`, `sourcemap` hanya aktif bila Sentry dikonfigurasi).
 - **Scripts**: `scripts/predev.ts`, `prebuild.ts`, `copy-icons.ts`,
   `copy-metainfo.ts`, `utils.ts`, `prepare.ts` (build server Node ke `dist/node`,
   bukan mengunduh Rust CLI — fork ini backend-nya server Node). 
@@ -328,14 +329,52 @@ arsitektur desktop upstream (`anomalyco/opencode`) ke kontrak fork ini.
   memeriksa binary yang tidak terunduh; logika test-nya sendiri lolos.
 - `packages/app` `src/i18n/parity.test.ts` → **5 pass / 0 fail** — 2 kegagalan
   lama (parity) hilang. Unit+browser app kini **724 pass / 0 fail**.
-- `bun run build` (electron-vite) → `prebuild` sukses (ikon + build `dist/node`);
-  renderer+preload berhasil **ter-bundle penuh** (`main-*.js` ~5.7MB + aset + 61
-  kamus lazy + `preload/index.js` + `index.html`). Build **main** gagal
-  **OOM (exit 137/134)** saat Rollup menelan `dist/node/node.js` 33MB / 874k
-  baris — batas RAM sandbox ~3.9GB tanpa swap; bukan kesalahan konfigurasi
-  (konfigurasi sama persis dengan upstream yang build-nya dijalankan di runner
-  CI yang lebih besar). Dicoba: `--max-old-space-size`, `build.minify:false`,
-  chunking — semuanya tetap OOM.
+- `bun run build` (electron-vite) → **exit 0, lengkap**. Setelah akar masalah
+  ditemukan dan diperbaiki (lihat "Penyebab OOM & solusinya" di bawah), ketiga
+  target ter-build: `out/main/index.js` (159.81 kB) + `out/main/sidecar.js`
+  (4.11 kB) + `out/main/chunks/` (node.js 34.5 MB + 4 wasm + `out/preload/index.js`
+  7.87 kB + renderer penuh (`main-*.js` ~5.68 MB, 61 kamus lazy, aset,
+  `index.html`)). **Perbaikan bersifat permanen** — bukan sekadar beruntung:
+  server tidak lagi masuk graph Rollup sama sekali.
+- `node /tmp/sidecar-e2e.mjs` (harness parentPort palsu) menggerakkan `out/main/sidecar.js`
+  sungguhan: terima `{type:"start",port:46001,...}` → server hidup → `/api/health`
+  **200** dalam 400 ms → `{type:"ready"}` → `{type:"stop"}` → `{type:"stopped"}`.
+  Server berhenti bersih tanpa proses yatim.
+- Smoke import `out/main/chunks/node.js` via Node 22 (runtime utilityProcess):
+  ekspor `Config, Database, Server, bootstrap`; `Server.listen()` pada `127.0.0.1`
+  → `/api/health` & `/global/health` **200**, CORS `access-control-allow-origin`
+  membalas `oc://renderer`, `listener.stop()` bersih. (`node:sqlite` perlu
+  Node ≥ 22 — Bun 1.3.14 tidak punya, jadi runtime yang benar adalah
+  utilityProcess Electron / Node 22, bukan Bun.)
+
+**Penyebab OOM & solusinya (akar masalah, akhirnya):**
+
+- Rollup men-*re-bundle* `dist/node/node.js` yang **sudah self-contained**
+  (~33 MB, 873.899 baris). Plugin `opencode:virtual-server-module`
+  me-resolve `virtual:opencode-server` → berkas itu, sehingga 874k baris
+  di-parse ulang sebagai source → melampaui RAM ~3.9 GB (exit 137/134).
+  Bukan karena kesalahan konfigurasi.
+- Solusi: **berhenti re-bundling; load runtime.** `sidecar.ts` kini `importServer()`
+  yang (1) coba `import("virtual:opencode-server")` bila ter-inline oleh build
+  berbeda, lalu (2) fallback `import()` URL berkas `out/main/chunks/node.js`
+  (atau `process.env.OPENCODE_SERVER_MODULE_URL`). Config menandai
+  `external: ["virtual:opencode-server"]` + `opencode:copy-server-assets`
+  menyalin `node.js` & 4 wasm ke `out/main/chunks/`.
+- Konsekuensi dependency: `node.js` mengimpor runtime `jsonc-parser` (3 situs)
+  dan `@lydell/node-pty` (top-level). Keduanya dipindah ke `dependencies`
+  desktop (`jsonc-parser 3.3.1`, `@lydell/node-pty 1.2.0-beta.12`) agar di-pack
+  electron-builder; binary platform node-pty sudah ada di `optionalDependencies`.
+- Portabilitas wasm terverifikasi di bundle: photon membaca
+  `globalThis.__OPENCODE_PHOTON_WASM_PATH` yang di-set ke path emisi (hash
+  `photon_rs_bg-bq08arze.wasm`) relatif `import.meta.url`; tree-sitter memakai
+  `Parser.init({ locateFile() { return treePath } })` dengan path emisi hash
+  (`tree-sitter-3jzf13jk.wasm` dst), jadi fallback `new URL("tree-sitter.wasm", …)`
+  tak pernah terpicu. Tidak lagi ada `__dirname` absolut build-machine yang
+  diandalkan (jalur absolut yang tersisa milik node-gyp/arborist/typescript
+  internal dan tidak dieksekusi).
+- Renderer `sourcemap` di-gate pada `sentry !== false`: map hanya dikonsumsi
+  plugin upload Sentry; untuk ~2600 modul, generasi map sendirian cukup untuk
+  OOM 4 GB. Release CI (Sentry terkonfigurasi) tetap menghasilkan map.
 
 **Kendala/risiko:**
 
@@ -350,8 +389,10 @@ arsitektur desktop upstream (`anomalyco/opencode`) ke kontrak fork ini.
 - Fixture models.dev committed (`packages/opencode/test/tool/fixtures/models-api.json`,
   ~4.9MB) dipakai sebagai `MODELS_DEV_API_JSON` offline oleh `buildNodeServer()`;
   `OPENCODE_MODELS_PATH` override tetap berlaku.
-- CPU/RAM: hanya boleh satu proses berat per waktu; main-process build OOM
-  bersifat sandbox-only.
+- CPU/RAM: hanya boleh satu proses berat per waktu. Main-process build OOM
+  **sudah teratasi** dengan load-runtime server (lihat di atas); yang tersisa
+  OOM adalah `tsgo --noEmit` di `packages/opencode` (full-repo typecheck),
+  tetap dianggap sandbox-only dan tidak dijalankan di sini.
 
 **Keputusan:**
 
@@ -365,11 +406,14 @@ arsitektur desktop upstream (`anomalyco/opencode`) ke kontrak fork ini.
 
 **Langkah berikutnya:**
 
-1. Selesaikan verifikasi main-process build + installer di lingkungan yang lebih
-   besar (CI `windows-latest` misalnya) — di sini terblokir OOM/baru egress.
+1. **Main-process build kini hijau (exit 0)** berkat load-runtime server
+   (`external` + `out/main/chunks/node.js`). Yang masih butuh runner lebih besar
+   hanyalah **installer/package** (electron-builder butuh binary Electron, dan
+   `package:win`/windres-NSIS butuh Windows) — jalankan `package:win` di CI
+   `windows-latest` milik pengguna, bukan di sandbox ini.
 2. Jalankan runtime desktop di Windows asli (launch dari ikon, pilih folder,
    chat, terminal, tutup, buka ulang) sebagai penerimaan Tahap 1B/1D.
-3. Setelah build main hijau, aktifkan `package:win` dan uji hasil NSIS.
+3. Setelah `package:win` berhasil, uji hasil NSIS (instal, lnch, uninstal).
 4. Pertimbangkan item 1B tersisa (kepemilikan proses, recovery crash) dan 1C
    (audit penuh izin agen) sebagai gate sebelum installer dirilis.
 

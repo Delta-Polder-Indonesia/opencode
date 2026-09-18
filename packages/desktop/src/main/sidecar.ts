@@ -1,5 +1,7 @@
 import * as http from "node:http"
 import * as tls from "node:tls"
+import { dirname, join } from "node:path"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 type NodeHttpWithEnvProxy = typeof http & {
   setGlobalProxyFromEnv: () => void
@@ -54,7 +56,7 @@ async function start(command: StartCommand) {
     ensureLoopbackNoProxy()
     useSystemCertificates()
     useEnvProxy()
-    const { Server } = await import("virtual:opencode-server")
+    const { Server } = await importServer()
 
     listener = await Server.listen({
       port: command.port,
@@ -146,6 +148,41 @@ function parseCommand(value: unknown): SidecarCommand | undefined {
 function serializeError(error: unknown) {
   if (error instanceof Error) return { message: error.message, stack: error.stack }
   return { message: String(error) }
+}
+
+type ServerNamespace = typeof import("virtual:opencode-server")
+
+/**
+ * The server is a pre-built, self-contained ESM bundle
+ * (`packages/opencode/dist/node/node.js`, ~33 MB). Re-bundling it into the
+ * main process would force Rollup to parse ~874k lines and exhaust the
+ * memory budget of small builders (and bloat the main chunk on real
+ * machines too). Instead the electron-vite build copies the file — and its
+ * sibling `.wasm` assets — to `out/main/chunks/`, and this utility process
+ * imports it at runtime.
+ *
+ * We resolve the URL so the location remains correct whether the app runs
+ * from `out/` in `electron-vite dev`, is packaged with electron-builder
+ * (`app.asar`), or the file was inlined by a fallback bundling config.
+ */
+async function importServer(): Promise<ServerNamespace> {
+  const viaVirtual = await import("virtual:opencode-server" as string).catch(() => undefined)
+  if (viaVirtual && typeof (viaVirtual as ServerNamespace).Server?.listen === "function") {
+    return viaVirtual as ServerNamespace
+  }
+  const url = resolveServerModuleUrl()
+  const loaded = await import(url)
+  if (!loaded || typeof loaded.Server?.listen !== "function") {
+    throw new Error(`OpenCode server bundle did not export Server.listen: ${url}`)
+  }
+  return loaded as ServerNamespace
+}
+
+function resolveServerModuleUrl(): string {
+  const preferred = process.env.OPENCODE_SERVER_MODULE_URL
+  if (preferred) return preferred
+  const here = dirname(fileURLToPath(import.meta.url))
+  return pathToFileURL(join(here, "chunks", "node.js")).href
 }
 
 function getParentPort() {
