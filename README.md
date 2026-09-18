@@ -8,6 +8,13 @@
   </a>
 </p>
 <p align="center">The open source AI coding agent.</p>
+
+> **Catatan fork.** Repositori ini adalah fork tidak resmi dari
+> [anomalyco/opencode](https://github.com/anomalyco/opencode) (MIT) yang
+> dipelihara oleh Delta Polder Indonesia. Bukan produk resmi OpenCode dan tidak
+> berafiliasi dengan tim OpenCode. Untuk instalasi/dukungan, rujuk ke repositori
+> upstream.
+
 <p align="center">
   <a href="https://opencode.ai/discord"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
   <a href="https://www.npmjs.com/package/opencode-ai"><img alt="npm" src="https://img.shields.io/npm/v/opencode-ai?style=flat-square" /></a>

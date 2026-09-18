@@ -20,6 +20,12 @@ on:
       - "script/dev-safe.cmd"
       - "script/dev-safe.tests.ps1"
       - ".github/workflows/dev-safe-windows.yml"
+  pull_request:
+    paths:
+      - "script/dev-safe.ps1"
+      - "script/dev-safe.cmd"
+      - "script/dev-safe.tests.ps1"
+      - ".github/workflows/dev-safe-windows.yml"
 
 permissions:
   contents: read
@@ -168,12 +174,14 @@ jobs:
         if: ${{ success() && (github.event_name != 'workflow_dispatch' || inputs.run_e2e) }}
         run: |
           $summary = Get-Content "dev-safe-summary.md" -Raw
-          $row = ($summary -split "`n" | Where-Object { $_ -match "Server nyata" })
-          if (-not $row) { throw "Baris uji e2e tidak ada di ringkasan" }
-          if ($row -match "dilewati") { throw "Uji e2e dilewati padahal diminta berjalan: $row" }
-          if ($row -notmatch "lulus") { throw "Uji e2e tidak lulus: $row" }
-          Write-Host "Uji e2e benar-benar dijalankan dan lulus."
-          Write-Host $row.Trim()
+          $expected = @("Server nyata", "-WithDevUi")
+          foreach ($needle in $expected) {
+            $row = ($summary -split "`n" | Where-Object { $_ -match [regex]::Escape($needle) })
+            if (-not $row) { throw "Baris uji '$needle' tidak ada di ringkasan" }
+            if ($row -match "dilewati") { throw "Uji '$needle' dilewati padahal diminta berjalan: $row" }
+            if ($row -notmatch "lulus") { throw "Uji '$needle' tidak lulus: $row" }
+            Write-Host "OK: $($row.Trim())"
+          }
 
       - name: Ringkasan hasil
         if: always()

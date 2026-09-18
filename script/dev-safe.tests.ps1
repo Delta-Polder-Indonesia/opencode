@@ -358,6 +358,101 @@ if ($IncludeE2E -and -not $e2eCommand) {
 }
 
 # --- Ringkasan -------------------------------------------------------------
+# --- 9. Mode -WithDevUi (Vite diganti shim palsu) --------------------------
+# Yang diuji: script menunggu server benar-benar siap sebelum UI dijalankan,
+# meneruskan --host 127.0.0.1 (menimpa host 0.0.0.0 di vite.config.ts), dan
+# membiarkan hanya 127.0.0.1 yang mendengarkan. Vite asli diganti shim .cmd
+# supaya tidak perlu `bun install`.
+$repoRootForUi = Split-Path -Parent $PSScriptRoot
+$viteShimCandidates = @(
+  (Join-Path $repoRootForUi "node_modules\.bin\vite.cmd"),
+  (Join-Path $repoRootForUi "packages\app\node_modules\.bin\vite.cmd")
+)
+$withDevUiSkip = $e2eSkip -or (($viteShimCandidates | Where-Object { Test-Path $_ }).Count -gt 0)
+
+Test-Case "-WithDevUi: tunggu server siap, jalankan Vite dengan --host 127.0.0.1, lalu bereskan" -Skip:$withDevUiSkip {
+  $shimDir = Join-Path $repoRootForUi "packages\app\node_modules\.bin"
+  $shim = Join-Path $shimDir "vite.cmd"
+  $marker = Join-Path ([System.IO.Path]::GetTempPath()) ("vite-stub-" + [guid]::NewGuid().ToString("N") + ".txt")
+  $devUiPort = 3011
+  $serverPort = $E2EPort + 1
+  $password = "ci-" + [guid]::NewGuid().ToString("N").Substring(0, 8)
+  $previousPassword = $env:OPENCODE_SERVER_PASSWORD
+  $outFile = [System.IO.Path]::GetTempFileName()
+  $errFile = [System.IO.Path]::GetTempFileName()
+  $devSafe = $null
+
+  New-Item -ItemType Directory -Force -Path $shimDir | Out-Null
+  # Shim ini mencatat argumen yang diterimanya, lalu menggantung sampai dimatikan.
+  @(
+    "@echo off",
+    "echo started args: %* > `"$marker`"",
+    ":loop",
+    "ping -n 2 127.0.0.1 >nul",
+    "goto loop"
+  ) | Set-Content -Path $shim -Encoding ASCII
+
+  $arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Target, "-NonInteractive",
+    "-WithDevUi", "-DevUiPort", "$devUiPort", "-Port", "$serverPort", "-Opencode", $e2eTarget)
+  $line = ($arguments | ForEach-Object { Quote-Arg $_ }) -join " "
+
+  try {
+    $env:OPENCODE_SERVER_PASSWORD = $password
+    $devSafe = Start-Process -FilePath (Get-ShellExe) -ArgumentList $line -NoNewWindow -PassThru `
+      -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+    Write-Host "  proses dev-safe PID $($devSafe.Id), menunggu shim Vite dijalankan ..."
+
+    $deadline = (Get-Date).AddSeconds(150)
+    while ((Get-Date) -lt $deadline -and -not (Test-Path $marker)) {
+      $devSafe.Refresh()
+      if ($devSafe.HasExited) {
+        $captured = ((Get-Content $outFile -Raw -ErrorAction SilentlyContinue) + "`n" + (Get-Content $errFile -Raw -ErrorAction SilentlyContinue))
+        throw "dev-safe.ps1 berhenti sebelum menjalankan Vite (kode $($devSafe.ExitCode)).`n$captured"
+      }
+      Start-Sleep -Milliseconds 500
+    }
+    if (-not (Test-Path $marker)) {
+      $captured = ((Get-Content $outFile -Raw -ErrorAction SilentlyContinue) + "`n" + (Get-Content $errFile -Raw -ErrorAction SilentlyContinue))
+      throw "shim Vite belum dijalankan setelah 150 detik.`n$captured"
+    }
+
+    $markerText = (Get-Content $marker -Raw).Trim()
+    $captured = ((Get-Content $outFile -Raw -ErrorAction SilentlyContinue) + "`n" + (Get-Content $errFile -Raw -ErrorAction SilentlyContinue))
+    Write-Host "  shim Vite: $markerText"
+
+    Assert-True ($markerText -match "--host 127\.0\.0\.1") "Vite dijalankan tanpa --host 127.0.0.1: $markerText"
+    Assert-True ($markerText -match "--port $devUiPort") "Vite dijalankan tanpa --port $devUiPort: $markerText"
+    Assert-True ($captured -match "Server siap di http://127\.0\.0\.1:$serverPort") "script tidak menunggu server siap sebelum UI"
+    Assert-True ($captured -match "Mode dipaksa jadi") "mode tidak dipaksa ke serve"
+
+    $addresses = Get-ListenerAddresses $serverPort
+    Assert-True ($addresses -contains "127.0.0.1") "server tidak mendengarkan di 127.0.0.1 (alamat: $($addresses -join ', '))"
+    Assert-True (-not ($addresses -contains "0.0.0.0")) "server mendengarkan di 0.0.0.0 (alamat: $($addresses -join ', '))"
+  } finally {
+    if ($devSafe) {
+      $devSafe.Refresh()
+      if (-not $devSafe.HasExited) { & taskkill /PID $devSafe.Id /T /F 2>&1 | Out-Null }
+      $devSafe.WaitForExit(15000) | Out-Null
+    }
+    # Proses anak (server + shim Vite) harus ikut mati; port server harus bebas.
+    Start-Sleep -Seconds 2
+    $leftover = Get-ListenerAddresses $serverPort
+    if ($devSafe -and $leftover.Count -gt 0) {
+      throw "setelah dev-safe.ps1 dimatikan, masih ada yang mendengarkan di port $serverPort : $($leftover -join ', ')"
+    }
+
+    Remove-Item -LiteralPath $shim, $marker -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $outFile, $errFile -ErrorAction SilentlyContinue
+    if (-not (Test-Path $shimDir)) { New-Item -ItemType Directory -Force -Path $shimDir | Out-Null }
+    if (-not (Get-ChildItem $shimDir -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $shimDir -ErrorAction SilentlyContinue }
+    if ($null -eq $previousPassword) {
+      Remove-Item Env:OPENCODE_SERVER_PASSWORD -ErrorAction SilentlyContinue
+    } else {
+      $env:OPENCODE_SERVER_PASSWORD = $previousPassword
+    }
+  }
+}
+
 $passed = ($script:results | Where-Object Status -eq "PASS").Count
 $failed = ($script:results | Where-Object Status -eq "FAIL").Count
 $skipped = ($script:results | Where-Object Status -eq "SKIP").Count
