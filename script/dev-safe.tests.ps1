@@ -421,7 +421,7 @@ Test-Case "-WithDevUi: tunggu server siap, jalankan Vite dengan --host 127.0.0.1
     Write-Host "  shim Vite: $markerText"
 
     Assert-True ($markerText -match "--host 127\.0\.0\.1") "Vite dijalankan tanpa --host 127.0.0.1: $markerText"
-    Assert-True ($markerText -match "--port $devUiPort") "Vite dijalankan tanpa --port $devUiPort: $markerText"
+    Assert-True ($markerText -match "--port $devUiPort") "Vite dijalankan tanpa --port ${devUiPort}: $markerText"
     Assert-True ($captured -match "Server siap di http://127\.0\.0\.1:$serverPort") "script tidak menunggu server siap sebelum UI"
     Assert-True ($captured -match "Mode dipaksa jadi") "mode tidak dipaksa ke serve"
 

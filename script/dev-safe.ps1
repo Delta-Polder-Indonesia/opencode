@@ -202,7 +202,7 @@ if ($Verify) {
     Show-ExposureReport $DevUiPort
   }
   Write-Head "Kalau password aktif, uji dengan kredensial"
-  Write-Note "curl.exe -s -o NUL -w `"%{http_code}`" -u $User:PASSWORD http://127.0.0.1:$Port/global/health"
+  Write-Note "curl.exe -s -o NUL -w `"%{http_code}`" -u ${User}:PASSWORD http://127.0.0.1:$Port/global/health"
   Write-Note "Harapannya 200. Kalau 401, password atau username salah."
   Write-Host ""
   exit 0
