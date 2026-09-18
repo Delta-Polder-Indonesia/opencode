@@ -4,9 +4,18 @@ Catatan kerja fork `Delta-Polder-Indonesia/opencode`. Sesi berjalan:
 `arena/01a0b0bc-opencode` (item 1–3, PR #3), `arena/01a0b171-opencode`
 (item 4a/gate 1, PR #4), `arena/01a0b189-opencode` (item 4a-lanjut/gate 3),
 lalu `arena/01a0b19d-opencode` (gate 3 lanjutan: auto-resume inbox),
-`arena/01a0b1cd-opencode` (stale-owner fencing), dan sekarang
-`arena/01a0b1b6-opencode` (item 4 final review).
+`arena/01a0b1cd-opencode` (stale-owner fencing), lalu
+`arena/01a0b1b6-opencode` (item 4 final review), dan sekarang
+`arena/01a0b221-opencode` (audit klaim catatan + rapikan dokumentasi perf).
 Ditulis ulang 2026-09-18 setelah slice item 4 selesai.
+
+Hasil audit `arena/01a0b221-opencode` (2026-09-18): seluruh 8 item di bawah
+terverifikasi ADA dan gate-nya dijalankan ulang di HEAD `9c3ad825c` —
+core `1148 pass / 0 fail`, typecheck `core`+`protocol`+`server`+`sdk/js` bersih,
+harness coverage `220/220`, harness effect `212 pass / 8 fail` dengan 8 nama
+identik dengan daftar di bawah. Satu klaim dokumentasi keliru dan sudah
+diperbaiki: item 8 menunjuk file perf yang salah (lihat koreksi di item 8).
+
 Rencana induk: 5 perbaikan prioritas yang disepakati user (lihat
 `specs/v2/todo.md` dan dokumen per-fase di `specs/v2/`).
 
@@ -62,9 +71,13 @@ background-job.ts` yang hanya butuh `Database.Service`. Item 4 kemudian
      `session_id` (field opsional baru di `BackgroundJob.Info` — jalur
      model-facing tidak berubah karena `infoOutput` sudah whitelist).
    - SDK regen (`packages/sdk/js` → `openapi.json` + `src/v2/gen/*`).
-   - Harness: helper seed `ctx.jobs([...])` baru (`types.ts`/`runtime.ts`/
-     `runner.ts`) + 4 skenario (`v2.job.list`, `v2.job.list.session-filter`,
-     `v2.job.get`, `v2.job.get.missing`). Lock-test TODO di
+   - Harness: helper seed `ctx.jobs([...])` baru (didefinisikan di
+     `test/server/httpapi-exercise/` — `types.ts`/`runtime.ts`/`runner.ts`;
+     skenarionya sendiri di `index.ts`). Slice gate 3 menambah 4 skenario
+     (`v2.job.list`, `v2.job.list.session-filter`, `v2.job.get`,
+     `v2.job.get.missing`); item 4 menyusul menambah 2 skenario cancel
+     (`v2.job.cancel`, `v2.job.cancel.stale-owner`), sehingga totalnya 6.
+     Lock-test TODO di
      `tool-bash.test.ts` diperbarui sadar: entri gate job dihapus karena
      sudah selesai.
 
@@ -96,7 +109,14 @@ background-job.ts` yang hanya butuh `Database.Service`. Item 4 kemudian
    test/script menurunkan wall clock sekitar `38.8s` menjadi `~26.5s`
    (1140 test, 0 gagal); perubahan hanya pada fixture, contention tests, dan
    migration check paralelisasi. Temuan dan batasannya dicatat di
-   `perf/test-suite.md`.
+   **`perf/core-test-suite.md`**.
+   Koreksi (audit 2026-09-18): entri ini semula menunjuk `perf/test-suite.md`,
+   yang salah — file itu cakupannya `packages/opencode/test/**` dan tidak
+   pernah membahas core. Baseline `38.8s` / `1140` juga tidak tercatat di
+   file markdown mana pun; satu-satunya sumbernya adalah pesan commit
+   `5ee4b25f3`. Keduanya kini tertulis di `perf/core-test-suite.md` beserta
+   pengukuran ulang di HEAD `9c3ad825c`: **26.95s, 1148 pass, 0 fail**
+   (8 test tambahan muncul setelah optimasi mendarat).
 
 ## Status item #4 dan pinggiran
 
