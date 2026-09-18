@@ -218,6 +218,33 @@ artifact `dev-safe-summary` (14 hari) dan `::error` per kegagalan. Harness-nya
 memakai server opencode sungguhan dari npm. Run pertama yang hijau:
 `35341492000`.
 
+Repo kini **publik** (2026-09-18). Konsekuensinya: menit Actions standard-runner
+gratis, jadi workflow dipicu juga oleh `pull_request` dan boleh memuat uji e2e
+dan uji `-WithDevUi`. Audit isi repo saat menjadi publik: tidak ada kredensial
+asli (yang cocok dengan pola rahasia hanya fixture tes, mis. `sk-1234...` dan
+`AKIAIOSFODNN7EXAMPLE`); TIDAK ada `.env`/kunci privat/berkas >5MB; commit
+trailer `Co-authored-by` adalah artefak hook sandbox, bukan rahasia. Satu
+kebocoran nyata dari kerjaan sesi ini: contoh `<IP-PC>` (IP LAN user)
+ditulis di `script/dev-safe.ps1` — sudah diganti `<IP-PC>` di HEAD, tetapi masih
+ada di blob commit `7e67146` dan `a07919f` (perlu tulis ulang riwayat kalau mau
+benar-benar hilang; belum dilakukan karena mengubah SHA). Belum aktif dan
+sebaiknya dinyalakan di Settings: Dependabot alerts (terkonfirmasi mati) dan
+secret protection/push protection.
+
+Tiga jebakan PowerShell yang ditemukan di sesi ini (semuanya terbukti lewat CI,
+bukan lewat pembacaan kode):
+
+1. **`$error` variabel otomatis read-only.** `foreach ($error in $parseErrors)`
+   membuat step CI mati tanpa sempat melaporkan error apa pun. Sekarang ada step
+   yang menolak `$error/$true/$false/$host/$input/$args` sebagai variabel loop.
+2. **`"$var:"` di dalam string adalah parse error** ("`:` was not followed by a
+   valid variable name character"). Pakai `${var}:`. Ditemukan di baris 424
+   `dev-safe.tests.ps1` dan pada `-u $User:PASSWORD` di `dev-safe.ps1`.
+3. **PowerShell meratakan array satu elemen** yang dikembalikan fungsi menjadi
+   string, sehingga `$x[0]` mengambil **huruf pertama** isi string ('D' dari
+   `D:\...`). Ini membuat `-WithDevUi` gagal untuk semua pengguna Windows.
+   `Resolve-ViteCommand` kini mengembalikan objek `{ File, Args }`.
+
 **Temuan penting dari CI (tidak terlihat dari pembacaan kode):** di runner
 Windows, `Get-Command opencode` mengembalikan shim **`.ps1`** dari npm
 (`C:\npm\prefix\opencode.ps1`), bukan `.cmd`/`.exe`. Shim `.ps1` berjalan di
