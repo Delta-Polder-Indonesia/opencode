@@ -209,6 +209,24 @@ sehari-hari (`opencode web` / `serve`) di Windows:
   checkout ini lewat `bun`.
 - `script/dev-safe.cmd` — pembungkus klik-dua-kali untuk script di atas.
 
+CI-nya: `.github/workflows/dev-safe-windows.yml` (job `windows-latest`, dipicu
+`workflow_dispatch` dengan input `run_e2e`, atau push yang menyentuh file-file
+di atas). Hasil uji tampil sebagai tabel di step summary halaman run, plus
+artifact `dev-safe-summary` (14 hari) dan `::error` per kegagalan. Harness-nya
+`script/dev-safe.tests.ps1`: 7 uji perilaku memakai server HTTP palsu
+(TcpListener: 401 tanpa header Authorization, 200 dengan header) + 1 uji e2e
+memakai server opencode sungguhan dari npm. Run pertama yang hijau:
+`35341492000`.
+
+**Temuan penting dari CI (tidak terlihat dari pembacaan kode):** di runner
+Windows, `Get-Command opencode` mengembalikan shim **`.ps1`** dari npm
+(`C:\npm\prefix\opencode.ps1`), bukan `.cmd`/`.exe`. Shim `.ps1` berjalan di
+dalam sesi PowerShell pemanggil dan diakhiri `exit`, sehingga `dev-safe.ps1`
+langsung berhenti (exit 0) dan server tidak pernah hidup. `dev-safe.ps1`
+sekarang memilih `.exe`/`.cmd` lebih dulu lewat `Get-Command -All`; shim
+`curl.exe` juga diberi `--max-time`. Pelajaran umum: untuk shim npm di Windows,
+jangan pakai hasil `Get-Command` pertama begitu saja.
+
 Temuan yang perlu diketahui: `opencode attach <url>` (dan `run`) **belum ada**
 di fork ini — `packages/opencode/src/cli/cmd/` tidak punya `attach.ts`,
 sementara upstream `anomalyco/opencode` punya. Halaman docs
