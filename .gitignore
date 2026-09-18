@@ -32,3 +32,6 @@ UPCOMING_CHANGELOG.md
 logs/
 *.bun-build
 tsconfig.tsbuildinfo
+
+# Desktop backend executable staged by packages/desktop/script/backend.ts
+packages/desktop/resources/backend/

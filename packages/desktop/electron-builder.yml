@@ -1,0 +1,30 @@
+appId: ai.opencode.desktop
+productName: OpenCode
+copyright: OpenCode contributors
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - package.json
+# The backend executable must live outside the asar archive: packed files
+# cannot be spawned as processes.
+extraResources:
+  - from: resources/backend
+    to: backend
+    filter:
+      - "**/*"
+asar: true
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${productName}-${version}-win-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: OpenCode

@@ -1,0 +1,35 @@
+{
+  "name": "@opencode-ai/desktop",
+  "version": "1.18.31",
+  "private": true,
+  "type": "module",
+  "description": "OpenCode desktop shell (Electron)",
+  "license": "MIT",
+  "main": "dist/main/index.cjs",
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "test": "bun test src --only-failures",
+    "dev": "bun run script/dev.ts",
+    "build": "bun run script/build.ts",
+    "build:renderer": "vite build --config vite.renderer.config.ts",
+    "build:backend": "bun run script/backend.ts",
+    "start": "electron dist/main/index.cjs",
+    "package:win": "bun run script/backend.ts --target windows-x64 && bun run script/build.ts && electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "20.12.0",
+    "@tsconfig/node22": "catalog:",
+    "@types/bun": "catalog:",
+    "@types/node": "catalog:",
+    "@typescript/native-preview": "catalog:",
+    "electron": "44.4.0",
+    "electron-builder": "26.15.3",
+    "typescript": "catalog:",
+    "vite": "catalog:"
+  },
+  "dependencies": {
+    "@opencode-ai/app": "workspace:*",
+    "solid-js": "catalog:",
+    "zod": "catalog:"
+  }
+}

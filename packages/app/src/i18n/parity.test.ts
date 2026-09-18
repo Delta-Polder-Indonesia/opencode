@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test"
+import { existsSync } from "node:fs"
 import { desktopNativePluralCategories } from "./desktop-native"
+
+// `packages/desktop` reuses the app dictionaries (it imports the shared
+// DESKTOP_NATIVE_* keys from this package) instead of shipping its own locale
+// files, so the desktop parity domain only applies when those files exist.
+const desktopDictionaries = existsSync(new URL("../../../desktop/src/renderer/i18n/en.ts", import.meta.url))
 
 const appLocales = [
   "ar",
@@ -88,12 +94,16 @@ const domains = [
     target: (locale: string) => `../../../ui/src/i18n/${locale}.ts`,
     locales: appLocales,
   },
-  {
-    name: "desktop",
-    source: "../../../desktop/src/renderer/i18n/en.ts",
-    target: (locale: string) => `../../../desktop/src/renderer/i18n/${locale}.ts`,
-    locales: desktopLocales,
-  },
+  ...(desktopDictionaries
+    ? [
+        {
+          name: "desktop",
+          source: "../../../desktop/src/renderer/i18n/en.ts",
+          target: (locale: string) => `../../../desktop/src/renderer/i18n/${locale}.ts`,
+          locales: desktopLocales,
+        },
+      ]
+    : []),
 ] as const
 
 describe("i18n parity", () => {
