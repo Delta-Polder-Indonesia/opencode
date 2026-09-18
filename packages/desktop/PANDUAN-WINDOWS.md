@@ -235,6 +235,32 @@ binary yang sudah ada:
 bun run script/backend.ts --from C:\path\ke\opencode.exe
 ```
 
+**`Port 4455 is already in use`**
+
+Ada sisa dev server dari percobaan sebelumnya yang masih memegang port itu.
+Penyebabnya sudah diperbaiki (lihat catatan di bawah), tetapi untuk
+membersihkan sisa yang terlanjur ada:
+
+```powershell
+# lihat siapa yang memegang port 4455
+netstat -ano | findstr :4455
+# matikan lewat PID di kolom terakhir
+taskkill /PID <pid> /T /F
+```
+
+Atau pakai port lain sekali jalan:
+
+```powershell
+$env:OPENCODE_DESKTOP_RENDERER_URL="http://127.0.0.1:4466"
+bun run dev
+```
+
+**Start pertama terasa sangat lama (Vite "ready in 139725 ms")**
+
+Normal di Windows pada percobaan pertama: Vite melakukan dependency
+pre-bundling untuk seluruh UI. Start berikutnya jauh lebih cepat karena hasilnya
+di-cache. Batas tunggu launcher kini 5 menit agar tidak menyerah lebih dulu.
+
 **Jendela terbuka tapi putih/kosong**
 
 Vite belum siap. Lihat output terminal; harusnya ada `127.0.0.1:4455`. Kalau port

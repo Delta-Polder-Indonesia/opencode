@@ -30,6 +30,8 @@ export type BackendSupervisorOptions = {
   spawnFn?: typeof spawn
   fetchFn?: typeof fetch
   now?: () => number
+  /** Injected for tests; shutdown differs sharply between Windows and POSIX. */
+  platform?: NodeJS.Platform
 }
 
 /**
@@ -51,9 +53,11 @@ export class BackendSupervisor {
   private readonly listeners = new Set<(state: BackendState) => void>()
   private stopping = false
   private startPromise?: Promise<BackendState>
+  private readonly platform: NodeJS.Platform
 
   constructor(private readonly options: BackendSupervisorOptions) {
     this.policy = { ...DEFAULT_RETRY_POLICY, ...options.policy }
+    this.platform = options.platform ?? process.platform
     this.state = {
       phase: { phase: "stopped" },
       credentials: { username: "opencode", password: randomBytes(24).toString("base64url") },
@@ -113,7 +117,7 @@ export class BackendSupervisor {
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
         // Own the whole process group so we can take down descendants too.
-        detached: process.platform !== "win32",
+        detached: this.platform !== "win32",
       })
     } catch (error) {
       log.error(`failed to spawn backend: ${String(error)}`)
@@ -244,20 +248,54 @@ export class BackendSupervisor {
   }
 
   /**
-   * Kills the child and, on POSIX, everything it spawned. If the process-group
-   * signal fails (the group may already be gone, or the child was never
-   * detached) we still signal the child directly, otherwise shutdown would hang
-   * waiting for an exit that never comes.
+   * Kills the child and everything it spawned.
+   *
+   * POSIX: the child is detached into its own process group, so we signal the
+   * group. If that fails (the group may already be gone) we still signal the
+   * child directly, otherwise shutdown would hang waiting for an exit that
+   * never comes.
+   *
+   * Windows: there are no process groups or signals. `child.kill()` terminates
+   * only the child itself, which would strip the supervisor of any grandchild
+   * the backend spawned and leave orphaned processes holding the port. So we
+   * shell out to `taskkill /T` to take the whole tree down.
    */
   private killTree(child: ChildProcess, signal: NodeJS.Signals) {
-    if (process.platform !== "win32" && typeof child.pid === "number") {
-      try {
-        process.kill(-child.pid, signal)
-        return
-      } catch {
-        // Fall through to signalling the child directly.
-      }
+    if (typeof child.pid !== "number") return
+
+    if (this.platform === "win32") {
+      this.killTreeWindows(child, signal)
+      return
     }
+
+    try {
+      process.kill(-child.pid, signal)
+      return
+    } catch {
+      // Fall through to signalling the child directly.
+    }
+    try {
+      child.kill(signal)
+    } catch {
+      // Already gone.
+    }
+  }
+
+  private killTreeWindows(child: ChildProcess, signal: NodeJS.Signals) {
+    const spawnFn = this.options.spawnFn ?? spawn
+    // SIGTERM is the graceful pass; only escalate to /F on the SIGKILL pass so
+    // the backend still gets a chance to shut itself down cleanly first.
+    const args = ["/PID", String(child.pid), "/T"]
+    if (signal === "SIGKILL") args.push("/F")
+    try {
+      const killer = spawnFn("taskkill", args, { stdio: "ignore", windowsHide: true })
+      killer.on?.("error", () => this.killDirect(child, signal))
+    } catch {
+      this.killDirect(child, signal)
+    }
+  }
+
+  private killDirect(child: ChildProcess, signal: NodeJS.Signals) {
     try {
       child.kill(signal)
     } catch {

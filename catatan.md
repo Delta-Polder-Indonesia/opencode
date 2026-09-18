@@ -75,14 +75,14 @@ serta kriteria kelulusan sebelum melanjutkan tahap berikutnya.
       terminal, dan diff. Backend belum dijalankan penuh di sandbox ini
       (`packages/opencode` ter-OOM saat typecheck; runtime end-to-end belum diuji).
 - [~] Verifikasi perubahan folder picker dan thinking ringkas. **Sebagian**:
-      terverifikasi lewat unit test dan pembacaan kode (web, desktop lokal, remote);
-      verifikasi runtime membuka ulang reasoning lama masih terblokir.
+  terverifikasi lewat unit test dan pembacaan kode (web, desktop lokal, remote);
+  verifikasi runtime membuka ulang reasoning lama masih terblokir.
 - [ ] **Terblokir** — Catat benchmark production sebelum perubahan
       session/timeline berikutnya. Sesi ini tidak menyentuh kode session/timeline,
       jadi benchmark belum wajib; belum dapat dijalankan di sandbox.
 - [~] Pastikan strategi build UI/backend dan kebutuhan aset/native dependency
-      dapat dipenuhi pada target Windows. **Sebagian**: build UI renderer terbukti
-      berhasil; binary Electron dan backend bundel belum dapat diunduh/diuji di sini.
+  dapat dipenuhi pada target Windows. **Sebagian**: build UI renderer terbukti
+  berhasil; binary Electron dan backend bundel belum dapat diunduh/diuji di sini.
 
 **Kriteria selesai:** lingkungan pengembangan dapat menjalankan aplikasi dan tes;
 status baseline serta kendala terdokumentasi. Jika pengujian Windows belum
@@ -108,10 +108,10 @@ tersedia, jangan menganggap build desktop Windows telah tervalidasi.
 ### 1B. Backend otomatis dan lifecycle
 
 - [~] Bundel backend/runtime yang kompatibel; pengguna tidak perlu memasang Bun
-      hanya untuk menjalankan aplikasi desktop. **Sebagian**: `script/backend.ts`
-      memanggil `bun build --compile` (menghasilkan executable mandiri) dan
-      `electron-builder.yml` mengemasnya sebagai `extraResources` di luar asar.
-      Kompilasi binary Windows belum dijalankan di sesi ini.
+  hanya untuk menjalankan aplikasi desktop. **Sebagian**: `script/backend.ts`
+  memanggil `bun build --compile` (menghasilkan executable mandiri) dan
+  `electron-builder.yml` mengemasnya sebagai `extraResources` di luar asar.
+  Kompilasi binary Windows belum dijalankan di sesi ini.
 - [x] Jalankan backend lokal otomatis dengan port tersedia, pemeriksaan kesehatan,
       batas waktu startup, dan penanganan benturan port.
       `--port 0` (utamakan 4096, fallback port bebas), polling `/api/health`,
@@ -144,9 +144,9 @@ tersedia, jangan menganggap build desktop Windows telah tervalidasi.
       proses. Diverifikasi terhadap backend nyata: 200 dengan kredensial benar,
       401 tanpa kredensial dan dengan password salah.
 - [~] Jangan menaruh token di URL/log; tentukan penyimpanan kredensial aman OS.
-      **Sebagian**: password backend dikirim lewat environment (bukan argv/URL,
-      sehingga tidak tampak di daftar proses) dan log meredaksi token/API key.
-      Penyimpanan kredensial OS (mis. Credential Manager) belum ditentukan.
+  **Sebagian**: password backend dikirim lewat environment (bukan argv/URL,
+  sehingga tidak tampak di daftar proses) dan log meredaksi token/API key.
+  Penyimpanan kredensial OS (mis. Credential Manager) belum ditentukan.
 - [x] Batasi navigasi, pembukaan jendela, origin, dan protokol tautan eksternal.
       `will-navigate` + `setWindowOpenHandler` + CSP di HTML renderer; hanya
       `http:`, `https:`, `mailto:` yang boleh dibuka keluar.
@@ -283,28 +283,28 @@ Langkah berikutnya:
 
 **Verifikasi (perintah dan hasil)**
 
-| Perintah | Hasil |
-| --- | --- |
-| `bun install` (dengan `NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt`) | berhasil |
-| `bun turbo typecheck --concurrency=1` | **16/17 lulus**; `opencode#typecheck` gagal |
-| `cd packages/app && bun run typecheck` | lulus |
-| `cd packages/app && bun run test:unit` | **724 pass / 0 fail** (sebelumnya 722/2) |
-| `cd packages/app && bun run test:browser` | 43 pass / 0 fail |
-| `cd packages/session-ui && bun test src` | 83 pass / 0 fail |
-| `cd packages/ui && bun run test` | 27 pass / 0 fail |
-| `cd script && bun test translate-app.test.ts` | 15 pass / 0 fail |
-| `cd packages/app && bun run build` | berhasil (mode web tidak rusak) |
+| Perintah                                                                        | Hasil                                       |
+| ------------------------------------------------------------------------------- | ------------------------------------------- |
+| `bun install` (dengan `NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt`) | berhasil                                    |
+| `bun turbo typecheck --concurrency=1`                                           | **16/17 lulus**; `opencode#typecheck` gagal |
+| `cd packages/app && bun run typecheck`                                          | lulus                                       |
+| `cd packages/app && bun run test:unit`                                          | **724 pass / 0 fail** (sebelumnya 722/2)    |
+| `cd packages/app && bun run test:browser`                                       | 43 pass / 0 fail                            |
+| `cd packages/session-ui && bun test src`                                        | 83 pass / 0 fail                            |
+| `cd packages/ui && bun run test`                                                | 27 pass / 0 fail                            |
+| `cd script && bun test translate-app.test.ts`                                   | 15 pass / 0 fail                            |
+| `cd packages/app && bun run build`                                              | berhasil (mode web tidak rusak)             |
 
 **Kegagalan lama vs regresi baru**
 
-- *Lama (bukan regresi):* `packages/app/src/i18n/parity.test.ts` gagal 2 tes di
+- _Lama (bukan regresi):_ `packages/app/src/i18n/parity.test.ts` gagal 2 tes di
   HEAD `abc2353` karena merujuk direktori i18n desktop upstream yang tidak ada di
   fork ini. Sudah diperbaiki; sekarang 0 fail.
-- *Lama (belum diperbaiki):* `opencode#typecheck` mati dengan `SIGKILL`. Ini
+- _Lama (belum diperbaiki):_ `opencode#typecheck` mati dengan `SIGKILL`. Ini
   kehabisan memori pada sandbox (RAM 3 GB, 2 vCPU), bukan kesalahan tipe —
   `tsgo` dibunuh OS tanpa mencetak diagnostik. Perlu diuji ulang di mesin
   dengan RAM lebih besar.
-- *Regresi baru:* tidak ada.
+- _Regresi baru:_ tidak ada.
 
 **Verifikasi PR #14 (folder picker + thinking ringkas)**
 
@@ -341,23 +341,23 @@ end-to-end pada mesin dengan memori memadai.
 
 **Perubahan dan file terkait** — paket baru `packages/desktop`:
 
-| Berkas | Isi |
-| --- | --- |
-| `src/main/index.ts` | Proses main: window ter-hardening, IPC tervalidasi, single-instance, kebijakan navigasi/permission |
-| `src/main/config.ts` | Penegakan URL backend loopback dan kebijakan navigasi |
-| `src/main/menu.ts` | Template menu dari `@opencode-ai/app/desktop-menu` (tidak ada definisi menu kedua) |
-| `src/main/storage.ts` | Penyimpanan key/value bernamespace di direktori data aplikasi OS |
-| `src/main/log.ts` | Log berkas dengan redaksi token/password/API key |
-| `src/preload/index.ts` | Satu-satunya jembatan `contextBridge`; tidak membocorkan `ipcRenderer` |
-| `src/shared/ipc.ts` | Kontrak IPC + parser validasi (bebas Electron/Node) |
-| `src/renderer/entry.tsx` | Entry renderer: memasang UI app lewat `PlatformProvider` |
-| `src/renderer/platform.ts` | Implementasi `Platform` desktop |
-| `src/renderer/bootstrap.ts` | Koneksi server awal (loopback) |
-| `index.html` | Host renderer dengan CSP ketat |
-| `vite.renderer.config.ts` | Build renderer memakai ulang plugin `@opencode-ai/app/vite` |
-| `script/build.ts`, `script/dev.ts` | Build (main/preload CJS + renderer Vite) dan launcher dev |
-| `electron-builder.yml` | Konfigurasi NSIS Windows x64 (**konfigurasi saja, belum dijalankan**) |
-| `AGENTS.md`, `README.md` | Aturan paket dan cara pakai |
+| Berkas                             | Isi                                                                                                |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `src/main/index.ts`                | Proses main: window ter-hardening, IPC tervalidasi, single-instance, kebijakan navigasi/permission |
+| `src/main/config.ts`               | Penegakan URL backend loopback dan kebijakan navigasi                                              |
+| `src/main/menu.ts`                 | Template menu dari `@opencode-ai/app/desktop-menu` (tidak ada definisi menu kedua)                 |
+| `src/main/storage.ts`              | Penyimpanan key/value bernamespace di direktori data aplikasi OS                                   |
+| `src/main/log.ts`                  | Log berkas dengan redaksi token/password/API key                                                   |
+| `src/preload/index.ts`             | Satu-satunya jembatan `contextBridge`; tidak membocorkan `ipcRenderer`                             |
+| `src/shared/ipc.ts`                | Kontrak IPC + parser validasi (bebas Electron/Node)                                                |
+| `src/renderer/entry.tsx`           | Entry renderer: memasang UI app lewat `PlatformProvider`                                           |
+| `src/renderer/platform.ts`         | Implementasi `Platform` desktop                                                                    |
+| `src/renderer/bootstrap.ts`        | Koneksi server awal (loopback)                                                                     |
+| `index.html`                       | Host renderer dengan CSP ketat                                                                     |
+| `vite.renderer.config.ts`          | Build renderer memakai ulang plugin `@opencode-ai/app/vite`                                        |
+| `script/build.ts`, `script/dev.ts` | Build (main/preload CJS + renderer Vite) dan launcher dev                                          |
+| `electron-builder.yml`             | Konfigurasi NSIS Windows x64 (**konfigurasi saja, belum dijalankan**)                              |
+| `AGENTS.md`, `README.md`           | Aturan paket dan cara pakai                                                                        |
 
 **Keputusan teknis**
 
@@ -394,15 +394,15 @@ end-to-end pada mesin dengan memori memadai.
 
 **Verifikasi (perintah dan hasil)**
 
-| Perintah | Hasil |
-| --- | --- |
-| `cd packages/desktop && bun test src` | **44 pass / 0 fail** (6 berkas) |
-| `cd packages/desktop && bun run typecheck` | bersih |
+| Perintah                                         | Hasil                                                                        |
+| ------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `cd packages/desktop && bun test src`            | **44 pass / 0 fail** (6 berkas)                                              |
+| `cd packages/desktop && bun run typecheck`       | bersih                                                                       |
 | `cd packages/desktop && bun run script/build.ts` | berhasil: `dist/main/index.cjs`, `dist/preload/index.cjs`, `dist/renderer/*` |
-| Vite dev server renderer pada `127.0.0.1:4455` | melayani HTML + mentransformasi `entry.tsx` |
-| `bunx oxlint packages/desktop` | 0 warning / 0 error |
-| `bunx prettier --check` | lulus |
-| `cd packages/app && bun run build` + `test:unit` | tetap hijau (mode web tidak rusak) |
+| Vite dev server renderer pada `127.0.0.1:4455`   | melayani HTML + mentransformasi `entry.tsx`                                  |
+| `bunx oxlint packages/desktop`                   | 0 warning / 0 error                                                          |
+| `bunx prettier --check`                          | lulus                                                                        |
+| `cd packages/app && bun run build` + `test:unit` | tetap hijau (mode web tidak rusak)                                           |
 
 Cakupan tes: validasi kontrak IPC, kebijakan loopback/navigasi, redaksi log,
 penyimpanan, pembangunan menu, dan smoke test proses main (modul `electron`
@@ -437,18 +437,18 @@ integrasi di dalam Electron runtime **belum tervalidasi**.
 
 **Perubahan dan file terkait**
 
-| Berkas | Isi |
-| --- | --- |
-| `src/main/backend.ts` | `BackendSupervisor`: spawn, tunggu banner port, polling health, shutdown pohon proses |
-| `src/main/backend-policy.ts` | Logika murni: parsing banner, argumen, environment, header auth, pemetaan kegagalan |
-| `src/main/paths.ts` | Resolusi path binary backend (packaged vs dev; di luar asar) |
-| `script/backend.ts` | Menyiapkan executable backend via `bun build --compile` |
-| `script/verify-backend.ts` | Pemeriksaan integrasi terhadap backend sungguhan |
-| `src/main/index.ts` | Integrasi lifecycle: startup, IPC status/retry, `before-quit` |
-| `src/shared/ipc.ts` | Tipe `BackendStatus` + kanal `backendState`/`backendRetry` |
-| `src/renderer/bootstrap.ts` | `waitForBackend()`, kredensial pada koneksi server |
-| `electron-builder.yml` | Backend dikemas sebagai `extraResources` (wajib di luar asar) |
-| `.gitignore` | Binary backend hasil staging tidak masuk Git |
+| Berkas                       | Isi                                                                                   |
+| ---------------------------- | ------------------------------------------------------------------------------------- |
+| `src/main/backend.ts`        | `BackendSupervisor`: spawn, tunggu banner port, polling health, shutdown pohon proses |
+| `src/main/backend-policy.ts` | Logika murni: parsing banner, argumen, environment, header auth, pemetaan kegagalan   |
+| `src/main/paths.ts`          | Resolusi path binary backend (packaged vs dev; di luar asar)                          |
+| `script/backend.ts`          | Menyiapkan executable backend via `bun build --compile`                               |
+| `script/verify-backend.ts`   | Pemeriksaan integrasi terhadap backend sungguhan                                      |
+| `src/main/index.ts`          | Integrasi lifecycle: startup, IPC status/retry, `before-quit`                         |
+| `src/shared/ipc.ts`          | Tipe `BackendStatus` + kanal `backendState`/`backendRetry`                            |
+| `src/renderer/bootstrap.ts`  | `waitForBackend()`, kredensial pada koneksi server                                    |
+| `electron-builder.yml`       | Backend dikemas sebagai `extraResources` (wajib di luar asar)                         |
+| `.gitignore`                 | Binary backend hasil staging tidak masuk Git                                          |
 
 **Keputusan teknis**
 
@@ -475,14 +475,14 @@ menggantung selamanya. Kini gagal-sinyal jatuh ke `child.kill()`.
 
 **Verifikasi (perintah dan hasil)**
 
-| Perintah | Hasil |
-| --- | --- |
-| `cd packages/desktop && bun test src` | **81 pass / 0 fail** (10 berkas) |
-| `cd packages/desktop && bun run typecheck` | bersih |
-| `cd packages/desktop && bun run script/verify-backend.ts` | **8/8 pemeriksaan lulus** |
-| `cd packages/desktop && bun run script/build.ts` | berhasil |
-| `bunx oxlint packages/desktop` | 0 warning / 0 error |
-| `cd packages/app && bun run test:unit` | 724 pass / 0 fail (tidak ada regresi) |
+| Perintah                                                  | Hasil                                 |
+| --------------------------------------------------------- | ------------------------------------- |
+| `cd packages/desktop && bun test src`                     | **81 pass / 0 fail** (10 berkas)      |
+| `cd packages/desktop && bun run typecheck`                | bersih                                |
+| `cd packages/desktop && bun run script/verify-backend.ts` | **8/8 pemeriksaan lulus**             |
+| `cd packages/desktop && bun run script/build.ts`          | berhasil                              |
+| `bunx oxlint packages/desktop`                            | 0 warning / 0 error                   |
+| `cd packages/app && bun run test:unit`                    | 724 pass / 0 fail (tidak ada regresi) |
 
 Pemeriksaan integrasi `verify-backend.ts` terhadap backend **sungguhan**:
 mencapai fase ready, bind ke `127.0.0.1`, health 200 dengan kredensial hasil
@@ -499,6 +499,40 @@ tidak ada proses backend yatim yang tersisa.
   sama, namun kompilasi mandiri masih perlu diuji tersendiri.
 - Pemulihan setelah crash dan persistensi sesi setelah buka ulang belum diuji:
   butuh Electron runtime.
+
+#### 2026-09-19 — Perbaikan dari uji coba Windows pertama
+
+Pengguna menjalankan `bun run dev` di Windows 10 x64 nyata. Jendela belum sempat
+terbuka, tetapi percobaan itu langsung menemukan tiga cacat.
+
+**1. Pohon proses tidak mati di Windows (paling serius).** `killTree()` memakai
+`process.kill(-pid)` untuk POSIX dan jatuh ke `child.kill()` pada Windows.
+Windows tidak punya process group maupun sinyal, jadi `child.kill()` hanya
+mematikan proses anak langsung dan meninggalkan cucu-prosesnya hidup sambil
+menahan port — persis kegagalan proses yatim yang seharusnya dicegah supervisor
+ini. Sekarang Windows memakai `taskkill /T`, dengan `/F` hanya pada tahap
+eskalasi SIGKILL agar backend tetap diberi kesempatan berhenti rapi lebih dulu.
+`process.platform` kini dapat diinjeksi sehingga kedua jalur bisa diuji.
+
+**2. Port 4455 tertinggal terpakai.** `bun x vite` hanyalah peluncur; mematikannya
+tidak mematikan Vite yang sesungguhnya. Akibatnya `bun run dev` berikutnya gagal
+dengan "Port 4455 is already in use". Kini dev launcher juga memakai `taskkill /T`
+di Windows, untuk Vite maupun Electron.
+
+**3. Batas tunggu terlalu pendek dan pesannya menyesatkan.** Start pertama Vite di
+Windows makan **139 detik** (dependency pre-bundling), melewati batas 60 detik.
+Lebih buruk lagi, saat `strictPort` membuat Vite langsung keluar karena port
+terpakai, launcher tetap menunggu sampai habis lalu melaporkan "did not become
+ready" — menutupi error sebenarnya. Batas kini 5 menit, dan launcher memantau
+proses Vite sehingga bisa langsung melapor saat prosesnya keluar duluan.
+
+Verifikasi: `bun test src` **84 pass / 0 fail** (3 tes baru untuk jalur Windows
+dan POSIX), oxlint bersih, prettier bersih.
+
+Catatan lingkungan: `bun install` di sandbox gagal pada build native
+`tree-sitter-powershell`, sehingga `bun run typecheck` melaporkan error
+`platform.ts`. Error yang sama muncul pada commit sebelum perubahan ini —
+**kendala lingkungan, bukan regresi**.
 
 **Langkah berikutnya**
 
@@ -707,6 +741,7 @@ dari package app).
   tree. Urutan load `ModelsDev.populate` adalah disk → snapshot → fetch
   (`packages/core/src/models-dev.ts:184`), jadi `OPENCODE_MODELS_PATH`
   menghilangkan fetch sama sekali.
+
 - Repository-wide `bun run lint` still exits on a pre-existing octal-literal
   error in `packages/session-ui/src/v2/components/prompt-input/index.tsx`;
   changed-file lint had no errors (only existing warnings).
@@ -800,7 +835,7 @@ Pelajaran penting (mahal, sudah dibuktikan dua kali di sesi ini):
   berkas tidak berubah, hanya riwayat).
 - Konsekuensi: semua SHA commit branch berubah → force-push dengan
   `--force-with-lease`; siapa pun yang sudah clone branch ini harus fetch ulang.
-- `git bundle create` untuk backup bisa bersifat *thin* (menyimpan
+- `git bundle create` untuk backup bisa bersifat _thin_ (menyimpan
   prerequisites) sehingga tidak bisa di-fetch ulang kalau objek aslinya sudah
   dipangkas — simpan salinan direktori repo atau biarkan remote sebagai sumber
   pemulihan.

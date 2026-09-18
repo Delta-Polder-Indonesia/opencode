@@ -34,27 +34,41 @@ class FakeChild extends EventEmitter {
   }
 }
 
+type SpawnCall = { command: string; args: string[]; options?: { detached?: boolean } }
+
 function supervisor(options?: {
   child?: FakeChild
   fetchFn?: typeof fetch
   spawnThrows?: boolean
   binaryMissing?: boolean
   startupTimeoutMs?: number
+  platform?: NodeJS.Platform
 }) {
   const { dir, binary } = fakeBinary()
   const child = options?.child ?? new FakeChild()
+  const spawns: SpawnCall[] = []
   const instance = new BackendSupervisor({
     binary: options?.binaryMissing ? join(dir, "does-not-exist") : binary,
     cwd: dir,
     log: log(),
+    platform: options?.platform,
     policy: { startupTimeoutMs: options?.startupTimeoutMs ?? 2_000, healthIntervalMs: 5, shutdownGraceMs: 50 },
-    spawnFn: (() => {
+    spawnFn: ((command: string, args: string[], spawnOptions?: { detached?: boolean }) => {
+      spawns.push({ command, args: args ?? [], options: spawnOptions })
+      if (command === "taskkill") {
+        // Emulate taskkill /T: the tree goes away, so the child exits.
+        queueMicrotask(() => {
+          child.exitCode = 0
+          child.emit("exit", 0, null)
+        })
+        return new EventEmitter()
+      }
       if (options?.spawnThrows) throw new Error("EACCES")
       return child
     }) as never,
     fetchFn: options?.fetchFn ?? ((async () => new Response("{}", { status: 200 })) as unknown as typeof fetch),
   })
-  return { instance, child }
+  return { instance, child, spawns }
 }
 
 describe("BackendSupervisor startup", () => {
@@ -180,6 +194,48 @@ describe("BackendSupervisor shutdown", () => {
     const { instance } = supervisor()
     await instance.stop()
     expect(instance.current().phase).toEqual({ phase: "stopped" })
+  })
+
+  // Windows has no process groups and no signals. Killing only the child would
+  // leave whatever the backend spawned alive, still holding the port, which is
+  // exactly the orphaned-process failure this supervisor exists to prevent.
+  test("kills the whole process tree on Windows", async () => {
+    const { instance, child, spawns } = supervisor({ platform: "win32" })
+    const started = instance.start()
+    queueMicrotask(() => child.say("opencode server listening on http://127.0.0.1:4096"))
+    await started
+    await instance.stop()
+
+    const taskkill = spawns.find((call) => call.command === "taskkill")
+    expect(taskkill).toBeDefined()
+    expect(taskkill!.args).toContain("/T")
+    expect(taskkill!.args).toContain(String(child.pid))
+    expect(instance.current().phase).toEqual({ phase: "stopped" })
+  })
+
+  // POSIX relies on detaching so the child gets its own killable process group.
+  // Windows has no such thing, and detaching there changes console behaviour.
+  test("detaches the backend only on POSIX", async () => {
+    const posix = supervisor({ platform: "linux" })
+    const posixStart = posix.instance.start()
+    queueMicrotask(() => posix.child.say("opencode server listening on http://127.0.0.1:4096"))
+    await posixStart
+    expect(posix.spawns[0]!.options?.detached).toBe(true)
+
+    const win = supervisor({ platform: "win32" })
+    const winStart = win.instance.start()
+    queueMicrotask(() => win.child.say("opencode server listening on http://127.0.0.1:4096"))
+    await winStart
+    expect(win.spawns[0]!.options?.detached).toBe(false)
+  })
+
+  test("signals the process group, not taskkill, on POSIX", async () => {
+    const { instance, child, spawns } = supervisor({ platform: "linux" })
+    const started = instance.start()
+    queueMicrotask(() => child.say("opencode server listening on http://127.0.0.1:4096"))
+    await started
+    await instance.stop()
+    expect(spawns.some((call) => call.command === "taskkill")).toBe(false)
   })
 })
 
