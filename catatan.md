@@ -225,16 +225,39 @@ asli (yang cocok dengan pola rahasia hanya fixture tes, mis. `sk-1234...` dan
 `AKIAIOSFODNN7EXAMPLE`); TIDAK ada `.env`/kunci privat/berkas >5MB; commit
 trailer `Co-authored-by` adalah artefak hook sandbox, bukan rahasia. Satu
 kebocoran nyata dari kerjaan sesi ini: contoh IP LAN pribadi user tertulis di
-`script/dev-safe.ps1` (kini diganti `<IP-PC>`) dan ikut tersimpan di blob commit
-lama. **Riwayat branch sudah ditulis ulang** dengan
-`git filter-repo --replace-text` (pemetaan IP → `<IP-PC>`, termasuk pesan
-commit) sehingga seluruh riwayat bersih; konsekuensinya SEMUA SHA commit branch
-berubah dan branch perlu force-push. Catatan praktis: `--replace-message`
-menulis ulang setiap pesan commit dan karena itu mengubah hash SELURUH riwayat
-(termasuk `main`) — jangan dipakai kalau ingin base tetap sama; `--replace-text`
-saja hanya menyentuh commit yang benar-benar berubah. Belum aktif dan sebaiknya
-dinyalakan di Settings: Dependabot alerts (terkonfirmasi mati) dan secret
-protection/push protection.
+`script/dev-safe.ps1` (kini `<IP-PC>`) dan ikut tersimpan di blob commit lama,
+plus disebut juga di pesan satu commit. **Riwayat branch sudah ditulis ulang**
+dengan resep ini:
+
+```bash
+printf 'IP-LAMA==><IP-PC>\n' > /tmp/rep.txt
+git filter-repo --refs 'main..arena/01a0b41d-opencode' \
+  --replace-text /tmp/rep.txt --replace-message /tmp/rep.txt
+```
+
+Pelajaran penting (mahal, sudah dibuktikan dua kali di sesi ini):
+
+- **Rentang `--refs main..<branch>` itu wajib.** Tanpa itu filter-repo menulis
+  ulang SELURUH riwayat — ribuan commit upstream ikut berhash baru, `main`
+  bergeser (`9521ccf` → hash lain), merge-base dengan `main` di GitHub hilang,
+  dan PR akan terlihat seperti menambahkan seluruh isi repo. Riwayat upstream
+  yang sudah publik memang tidak boleh ditulis ulang; jangan pernah
+  mem-force-push `main`.
+- Dengan rentang itu: `main` tetap `9521ccf`, merge-base utuh, hanya commit
+  branch yang berubah.
+- Verifikasi setelah rewrite: `git merge-base main HEAD` == `9521ccf`,
+  `git log --all -S '<IP-LAMA>'` kosong, `git log --all --format=%s%n%b | grep -c <IP>`
+  = 0, dan **`git rev-parse HEAD^{tree}` sama dengan sebelum rewrite** (isi
+  berkas tidak berubah, hanya riwayat).
+- Konsekuensi: semua SHA commit branch berubah → force-push dengan
+  `--force-with-lease`; siapa pun yang sudah clone branch ini harus fetch ulang.
+- `git bundle create` untuk backup bisa bersifat *thin* (menyimpan
+  prerequisites) sehingga tidak bisa di-fetch ulang kalau objek aslinya sudah
+  dipangkas — simpan salinan direktori repo atau biarkan remote sebagai sumber
+  pemulihan.
+
+Belum aktif dan sebaiknya dinyalakan di Settings: Dependabot alerts
+(terkonfirmasi mati) dan secret protection/push protection.
 
 Tiga jebakan PowerShell yang ditemukan di sesi ini (semuanya terbukti lewat CI,
 bukan lewat pembacaan kode):
