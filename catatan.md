@@ -378,10 +378,20 @@ arsitektur desktop upstream (`anomalyco/opencode`) ke kontrak fork ini.
 
 **Kendala/risiko:**
 
-- Sandbox memblokir unduhan binary Electron (CDN `release-assets.githubusercontent.com`
-  & mirror lain; `@electron/get` gagal) → dev/launch/package UI **tidak bisa
-  dijalankan** di sini. `install-electron` gagal di sini, tapi bin itu tersedia
-  dari dependensi `electron` (postinstall normal di mesin biasa/CI).
+- Sandbox memblokir unduhan binary Electron. Pemetaan egress **definitif**
+  (diukur ulang dengan `curl -w` per host): **bisa** = `registry.npmjs.org`,
+  `github.com`, `api.github.com`, `codeload.github.com` (200, TLS ok);
+  **diblokir di lapisan TLS (`curl:35 SSL_ERROR_SYSCALL`, kode 000)** =
+  `release-assets.githubusercontent.com`, `objects.githubusercontent.com`,
+  `npmmirror.com`, `registry.npmmirror.com`, `mirrors.huaweicloud.com`,
+  `mirrors.cloud.tencent.com`, `mirrors.tuna.tsinghua.edu.cn`. Binary Electron
+  hanya ada di host terblokir itu (endpoint asset `api.github.com` cuma
+  302-redirect ke `release-assets…` lalu mati), jadi **jangan ulangi percobaan
+  mirror yang sama** — dev/launch/package UI tidak akan bisa dijalankan di sini,
+  apa pun mirror-nya. Tambahan: sandbox ini juga **tanpa X display** (tanpa
+  `DISPLAY`/`xvfb-run`), jadi launch GUI Electron tidak mungkin meski binary
+  ada. `package:win` tetap butuh runner Windows. Semua verifikasi lifecycle
+  backend dilakukan via harness Node 22 (setara runtime utilityProcess).
 - `@opencode-ai/script` membaca `.github/TEAM_MEMBERS` saat import; fork ini
   tidak membawanya → build `dist/node` gagal. Ditambahkan placeholder ONLY COMMENT
   (tanpa memalsukan username; parser melewatkan baris `#`), jadi build dapat
