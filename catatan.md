@@ -1,9 +1,10 @@
 # Perencanaan Pengembangan Desktop AI IDE
 
 Tanggal rencana: **19 September 2026**.
-Status: **Tahap 0 sebagian selesai, Tahap 1A terimplementasi (belum tervalidasi
-runtime); Tahap 1B/1D belum dimulai**. Lihat bagian
-[Progres](#progres) untuk bukti per tahap.
+Status: **Tahap 0 sebagian selesai; Tahap 1A dan 1B terimplementasi (backend
+terverifikasi terhadap server nyata, integrasi Electron runtime belum
+tervalidasi); Tahap 1D belum dimulai**. Lihat bagian [Progres](#progres) untuk
+bukti per tahap.
 
 ## Tujuan
 
@@ -106,16 +107,30 @@ tersedia, jangan menganggap build desktop Windows telah tervalidasi.
 
 ### 1B. Backend otomatis dan lifecycle
 
-- [ ] Bundel backend/runtime yang kompatibel; pengguna tidak perlu memasang Bun
-      hanya untuk menjalankan aplikasi desktop.
-- [ ] Jalankan backend lokal otomatis dengan port tersedia, pemeriksaan kesehatan,
+- [~] Bundel backend/runtime yang kompatibel; pengguna tidak perlu memasang Bun
+      hanya untuk menjalankan aplikasi desktop. **Sebagian**: `script/backend.ts`
+      memanggil `bun build --compile` (menghasilkan executable mandiri) dan
+      `electron-builder.yml` mengemasnya sebagai `extraResources` di luar asar.
+      Kompilasi binary Windows belum dijalankan di sesi ini.
+- [x] Jalankan backend lokal otomatis dengan port tersedia, pemeriksaan kesehatan,
       batas waktu startup, dan penanganan benturan port.
-- [ ] Tampilkan loading, error startup yang dapat dipahami, opsi pemulihan, dan log
-      yang tidak membocorkan kredensial.
-- [ ] Tentukan perilaku single-instance/multi-window serta kepemilikan proses.
-- [ ] Saat aplikasi ditutup, hentikan backend dan proses anak yang dimilikinya
+      `--port 0` (utamakan 4096, fallback port bebas), polling `/api/health`,
+      batas waktu 60 detik. Benturan port diverifikasi langsung: instance kedua
+      mendapat port 39915.
+- [x] Tampilkan loading, error startup yang dapat dipahami, opsi pemulihan, dan log
+      yang tidak membocorkan kredensial. Renderer menunggu backend sehat; kegagalan
+      menghasilkan alasan bertipe (`missing-binary`, `spawn-failed`, `exited-early`,
+      `startup-timeout`, `unhealthy`) yang dipetakan ke kunci i18n, plus
+      `backendRetry` untuk mencoba lagi. Log meredaksi kredensial.
+- [x] Tentukan perilaku single-instance/multi-window serta kepemilikan proses.
+      Single-instance lock; satu backend dimiliki proses main dan dipakai bersama
+      semua window; server eksternal tidak pernah dimiliki aplikasi.
+- [x] Saat aplikasi ditutup, hentikan backend dan proses anak yang dimilikinya
       dengan benar; jangan menghentikan server eksternal milik pengguna.
-- [ ] Uji pemulihan setelah crash serta persistensi sesi/proyek setelah dibuka ulang.
+      `before-quit` ditunda sampai anak benar-benar keluar; SIGTERM ke process
+      group lalu eskalasi SIGKILL. Diverifikasi: port dilepas, tidak ada proses yatim.
+- [ ] **Terblokir** — Uji pemulihan setelah crash serta persistensi sesi/proyek
+      setelah dibuka ulang. Butuh Electron runtime yang belum tersedia di sandbox.
 
 ### 1C. Keamanan
 
@@ -123,13 +138,15 @@ tersedia, jangan menganggap build desktop Windows telah tervalidasi.
       Diuji lewat `src/main/index.test.ts` dengan modul `electron` yang di-mock.
 - [x] Batasi API preload/IPC; validasi pengirim, argumen, path, dan operasi yang diizinkan.
       Semua handler memakai `senderWindow()` + parser di `src/shared/ipc.ts`.
-- [~] Backend desktop lokal bind hanya ke loopback dengan autentikasi; jangan
-      membuka layanan eksekusi shell ke LAN secara default. **Sebagian**: shell
-      menolak URL backend non-loopback; autentikasi dan supervisi backend
-      menyusul di Tahap 1B.
+- [x] Backend desktop lokal bind hanya ke loopback dengan autentikasi; jangan
+      membuka layanan eksekusi shell ke LAN secara default.
+      Backend dijalankan dengan `--hostname 127.0.0.1` dan password acak per
+      proses. Diverifikasi terhadap backend nyata: 200 dengan kredensial benar,
+      401 tanpa kredensial dan dengan password salah.
 - [~] Jangan menaruh token di URL/log; tentukan penyimpanan kredensial aman OS.
-      **Sebagian**: log desktop melakukan redaksi token/API key; penyimpanan
-      kredensial OS belum ditentukan.
+      **Sebagian**: password backend dikirim lewat environment (bukan argv/URL,
+      sehingga tidak tampak di daftar proses) dan log meredaksi token/API key.
+      Penyimpanan kredensial OS (mis. Credential Manager) belum ditentukan.
 - [x] Batasi navigasi, pembukaan jendela, origin, dan protokol tautan eksternal.
       `will-navigate` + `setWindowOpenHandler` + CSP di HTML renderer; hanya
       `http:`, `https:`, `mailto:` yang boleh dibuka keluar.
@@ -412,6 +429,84 @@ frame asing.
    jendela, dialog folder, menu, dan penyimpanan secara nyata.
 3. Setelah 1B stabil, jalankan `electron-builder` untuk installer Windows x64 dan
    uji install/launch/uninstall pada Windows bersih (Tahap 1D).
+
+#### 2026-09-18 — Tahap 1B (Backend otomatis dan lifecycle)
+
+**Status:** implementasi selesai dan **terverifikasi terhadap backend nyata**;
+integrasi di dalam Electron runtime **belum tervalidasi**.
+
+**Perubahan dan file terkait**
+
+| Berkas | Isi |
+| --- | --- |
+| `src/main/backend.ts` | `BackendSupervisor`: spawn, tunggu banner port, polling health, shutdown pohon proses |
+| `src/main/backend-policy.ts` | Logika murni: parsing banner, argumen, environment, header auth, pemetaan kegagalan |
+| `src/main/paths.ts` | Resolusi path binary backend (packaged vs dev; di luar asar) |
+| `script/backend.ts` | Menyiapkan executable backend via `bun build --compile` |
+| `script/verify-backend.ts` | Pemeriksaan integrasi terhadap backend sungguhan |
+| `src/main/index.ts` | Integrasi lifecycle: startup, IPC status/retry, `before-quit` |
+| `src/shared/ipc.ts` | Tipe `BackendStatus` + kanal `backendState`/`backendRetry` |
+| `src/renderer/bootstrap.ts` | `waitForBackend()`, kredensial pada koneksi server |
+| `electron-builder.yml` | Backend dikemas sebagai `extraResources` (wajib di luar asar) |
+| `.gitignore` | Binary backend hasil staging tidak masuk Git |
+
+**Keputusan teknis**
+
+1. **`--port 0`, bukan port tetap.** Backend sudah mengutamakan 4096 lalu jatuh ke
+   port bebas. Port dibaca dari stdout, tidak pernah ditebak. Diverifikasi
+   langsung: instance kedua mendapat 39915 saat 4096 terpakai.
+2. **Password acak per proses lewat environment.** Tidak lewat argv (agar tidak
+   tampak di daftar proses) dan tidak lewat URL. `OPENCODE_SERVER_PASSWORD` milik
+   induk sengaja ditimpa agar kredensial yang diberikan ke renderer selalu cocok.
+3. **Kepemilikan proses eksplisit.** Backend yang di-spawn aplikasi dimatikan saat
+   keluar; server dari `OPENCODE_DESKTOP_SERVER_URL` tidak pernah disentuh.
+4. **Kegagalan bertipe, bukan menggantung.** Lima alasan kegagalan dipetakan ke
+   kunci i18n; 401/403 tidak di-retry karena retry tidak akan menolong.
+5. **Backend di luar asar.** Berkas di dalam arsip asar tidak dapat dieksekusi,
+   jadi dikemas sebagai `extraResources`.
+6. **Gating startup memakai mekanisme yang sudah ada.** Renderer menunggu backend
+   sehat sebelum mount, dan `ErrorPage` bersama sudah punya kunci
+   `error.page.description.localServerStartup` untuk semua locale — tidak ada
+   string Inggris baru yang di-hardcode.
+
+**Bug yang ditemukan tes sendiri:** `killTree()` semula hanya memanggil
+`process.kill(-pid)`. Ketika pemberian sinyal ke process group gagal, shutdown
+menggantung selamanya. Kini gagal-sinyal jatuh ke `child.kill()`.
+
+**Verifikasi (perintah dan hasil)**
+
+| Perintah | Hasil |
+| --- | --- |
+| `cd packages/desktop && bun test src` | **81 pass / 0 fail** (10 berkas) |
+| `cd packages/desktop && bun run typecheck` | bersih |
+| `cd packages/desktop && bun run script/verify-backend.ts` | **8/8 pemeriksaan lulus** |
+| `cd packages/desktop && bun run script/build.ts` | berhasil |
+| `bunx oxlint packages/desktop` | 0 warning / 0 error |
+| `cd packages/app && bun run test:unit` | 724 pass / 0 fail (tidak ada regresi) |
+
+Pemeriksaan integrasi `verify-backend.ts` terhadap backend **sungguhan**:
+mencapai fase ready, bind ke `127.0.0.1`, health 200 dengan kredensial hasil
+generate, **401 tanpa kredensial**, **401 dengan password salah**, supervisor
+melaporkan stopped, dan **port dilepas setelah shutdown**. Diperiksa terpisah:
+tidak ada proses backend yatim yang tersisa.
+
+**Kendala/risiko**
+
+- Binary backend Windows belum dikompilasi di sini; `script/backend.ts` sudah
+  ada tetapi hanya jalur build untuk platform saat ini yang dijalankan.
+- Verifikasi integrasi memakai shim yang menjalankan backend dari source melalui
+  Bun, bukan executable `--compile`. Kontrak proses (stdout, port, auth, sinyal)
+  sama, namun kompilasi mandiri masih perlu diuji tersendiri.
+- Pemulihan setelah crash dan persistensi sesi setelah buka ulang belum diuji:
+  butuh Electron runtime.
+
+**Langkah berikutnya**
+
+1. Kompilasi backend untuk `windows-x64` dan uji `script/backend.ts --target windows-x64`.
+2. Jalankan `bun run dev` pada mesin berdisplay untuk memvalidasi loading,
+   layar error, dan retry secara nyata.
+3. Tahap 1D: `electron-builder --win --x64`, lalu uji install → buka lewat ikon →
+   pilih folder → chat → terminal → tutup → buka ulang → uninstall pada Windows bersih.
 
 ---
 

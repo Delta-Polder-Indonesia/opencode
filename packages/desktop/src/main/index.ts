@@ -19,9 +19,12 @@ import {
   type DesktopNativeBundle,
   type DesktopNativeKey,
 } from "@opencode-ai/app/i18n/desktop-native"
+import { BackendSupervisor } from "./backend"
+import { failureSummary, type BackendPhase } from "./backend-policy"
 import { allowInAppNavigation, isLoopbackUrl, resolveLocalServerUrl } from "./config"
 import { DesktopLog } from "./log"
 import { buildMenuTemplate, menuPlatform } from "./menu"
+import { backendBinaryPath } from "./paths"
 import { DesktopStorage } from "./storage"
 import {
   IPC,
@@ -34,12 +37,17 @@ import {
   parseStorageRemoveRequest,
   parseStorageSetRequest,
   parseTitlebarRequest,
+  type BackendStatus,
   type DesktopInfo,
 } from "../shared/ipc"
 
 const DEV_RENDERER_URL = process.env.OPENCODE_DESKTOP_RENDERER_URL
 const IS_DEV = !app.isPackaged
-const SERVER_URL = resolveLocalServerUrl(process.env)
+/**
+ * When the developer points the shell at a server they run themselves we must
+ * not spawn or kill anything; the bundled supervisor is only used otherwise.
+ */
+const EXTERNAL_SERVER_URL = process.env.OPENCODE_DESKTOP_SERVER_URL ? resolveLocalServerUrl(process.env) : undefined
 const DEFAULT_SERVER_NAMESPACE = "settings"
 const DEFAULT_SERVER_KEY = "defaultServerUrl"
 
@@ -47,6 +55,54 @@ const log = new DesktopLog(app.getPath("logs"))
 const storage = new DesktopStorage(join(app.getPath("userData"), "storage"))
 const windowIDs = new WeakMap<BrowserWindow, string>()
 let translations: DesktopNativeBundle | undefined
+
+const backend = new BackendSupervisor({
+  binary: backendBinaryPath({
+    platform: process.platform,
+    packaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    mainDir: __dirname,
+  }),
+  cwd: app.getPath("userData"),
+  log,
+})
+
+/** URL the renderer talks to, or undefined while the backend is still starting. */
+function serverUrl() {
+  const phase = backend.current().phase
+  if (phase.phase === "ready" || phase.phase === "external") return phase.url
+  return undefined
+}
+
+/** Origin used for navigation checks; falls back to the dev default. */
+function serverOrigin() {
+  return serverUrl() ?? resolveLocalServerUrl({})
+}
+
+function backendStatus(phase: BackendPhase = backend.current().phase): BackendStatus {
+  switch (phase.phase) {
+    case "ready":
+      return { status: "ready", url: phase.url }
+    case "external":
+      return { status: "external", url: phase.url }
+    case "starting":
+      return { status: "starting" }
+    case "failed":
+      return { status: "failed", messageKey: failureSummary(phase.reason), detail: phase.detail }
+    case "stopped":
+      return { status: "stopped" }
+  }
+}
+
+function broadcastBackendState() {
+  const status = backendStatus()
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) continue
+    window.webContents.send(IPC_EVENT.backendState, status)
+  }
+}
+
+backend.subscribe(() => broadcastBackendState())
 
 function t(key: DesktopNativeKey) {
   return translations?.messages[key] ?? DESKTOP_NATIVE_ENGLISH[key]
@@ -70,7 +126,7 @@ function senderWindow(event: IpcMainInvokeEvent) {
   if (!window || window.isDestroyed()) return undefined
   if (!windowIDs.has(window)) return undefined
   const url = event.senderFrame?.url ?? ""
-  if (url && !allowInAppNavigation(url, { rendererOrigin: rendererOrigin(), serverOrigin: SERVER_URL })) {
+  if (url && !allowInAppNavigation(url, { rendererOrigin: rendererOrigin(), serverOrigin: serverOrigin() })) {
     log.warn(`rejected IPC from unexpected frame url=${url}`)
     return undefined
   }
@@ -182,7 +238,7 @@ async function createWindow() {
   })
 
   window.webContents.on("will-navigate", (event, url) => {
-    if (allowInAppNavigation(url, { rendererOrigin: rendererOrigin(), serverOrigin: SERVER_URL })) return
+    if (allowInAppNavigation(url, { rendererOrigin: rendererOrigin(), serverOrigin: serverOrigin() })) return
     event.preventDefault()
     openExternal(url)
   })
@@ -216,13 +272,34 @@ function registerIpc() {
     const window = senderWindow(event)
     if (!window) return undefined
     const stored = storage.get(DEFAULT_SERVER_NAMESPACE, DEFAULT_SERVER_KEY)
+    const phase = backend.current().phase
     return {
       version: app.getVersion(),
       os: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux",
       windowID: windowIDs.get(window) ?? "",
-      serverUrl: SERVER_URL,
+      serverUrl: serverUrl() ?? "",
       defaultServerUrl: stored,
+      // Credentials only apply to the backend this app owns; a server the user
+      // runs themselves keeps whatever auth they configured.
+      localServerAuth: phase.phase === "ready" ? { ...backend.current().credentials } : null,
+      backend: backendStatus(phase),
     }
+  })
+
+  ipcMain.handle(IPC.backendState, (event): BackendStatus | undefined => {
+    if (!senderWindow(event)) return undefined
+    return backendStatus()
+  })
+
+  ipcMain.handle(IPC.backendRetry, async (event) => {
+    if (!senderWindow(event)) return false
+    const phase = backend.current().phase
+    // Only a failed backend may be retried; never restart a healthy one or a
+    // server owned by the user.
+    if (phase.phase !== "failed") return false
+    log.info("retrying backend startup at the user's request")
+    await backend.start()
+    return true
   })
 
   ipcMain.handle(IPC.openExternal, (event, value: unknown) => {
@@ -357,14 +434,24 @@ function main() {
   })
 
   app.whenReady().then(async () => {
-    if (!isLoopbackUrl(SERVER_URL)) {
-      log.error("local server URL is not loopback; refusing to start")
+    if (EXTERNAL_SERVER_URL && !isLoopbackUrl(EXTERNAL_SERVER_URL)) {
+      log.error("configured server URL is not loopback; refusing to start")
       app.exit(1)
       return
     }
     registerIpc()
     applyMenu()
+
+    // Show the window first so the user sees the loading state instead of an
+    // empty desktop while the backend boots.
     await createWindow()
+
+    if (EXTERNAL_SERVER_URL) {
+      log.info(`using the server already running at ${EXTERNAL_SERVER_URL}; not starting a bundled backend`)
+      backend.useExternal(EXTERNAL_SERVER_URL)
+    } else {
+      void backend.start()
+    }
 
     app.on("activate", () => {
       if (!BrowserWindow.getAllWindows().length) void createWindow()
@@ -373,6 +460,19 @@ function main() {
 
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit()
+  })
+
+  // Take the backend down with us. `before-quit` is deferred until the child has
+  // actually exited so we never leave an orphaned server holding the port.
+  let shuttingDown = false
+  app.on("before-quit", (event) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    event.preventDefault()
+    void backend
+      .stop()
+      .catch((error) => log.error(`failed to stop backend cleanly: ${String(error)}`))
+      .finally(() => app.exit(0))
   })
 }
 

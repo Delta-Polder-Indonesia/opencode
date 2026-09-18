@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron"
-import { IPC, IPC_EVENT, type DesktopInfo } from "../shared/ipc"
+import { IPC, IPC_EVENT, type BackendStatus, type DesktopInfo } from "../shared/ipc"
 
 /**
  * The only bridge between the sandboxed renderer and the main process.
@@ -28,6 +28,17 @@ const bridge = {
   runMenuAction: (action: string): Promise<boolean> => ipcRenderer.invoke(IPC.runMenuAction, action),
   publishTranslations: (bundle: unknown): Promise<boolean> => ipcRenderer.invoke(IPC.publishTranslations, bundle),
   restart: (): Promise<boolean> => ipcRenderer.invoke(IPC.restart),
+  backend: {
+    state: (): Promise<BackendStatus | undefined> => ipcRenderer.invoke(IPC.backendState),
+    retry: (): Promise<boolean> => ipcRenderer.invoke(IPC.backendRetry),
+    subscribe: (handler: (state: BackendStatus) => void) => {
+      const listener = (_event: unknown, state: unknown) => {
+        if (state && typeof state === "object" && "status" in state) handler(state as BackendStatus)
+      }
+      ipcRenderer.on(IPC_EVENT.backendState, listener)
+      return () => ipcRenderer.removeListener(IPC_EVENT.backendState, listener)
+    },
+  },
   onMenuAction: (handler: (action: string) => void) => {
     const listener = (_event: unknown, action: unknown) => {
       if (typeof action === "string") handler(action)

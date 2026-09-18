@@ -19,6 +19,19 @@ never fork or duplicate the UI: everything visible comes from
 - External links are limited to `http:`, `https:`, and `mailto:`.
 - Never log tokens, passwords, or API keys; `src/main/log.ts` redacts them.
 
+## Backend lifecycle
+
+- The app owns only the backend it spawned. A server adopted through
+  `OPENCODE_DESKTOP_SERVER_URL` must never be killed, restarted, or reconfigured.
+- The bundled backend binds loopback only and authenticates with a password
+  generated per run. Never pass that password through argv, a URL, or a log line.
+- Never assume a port. Read the port the backend reports on stdout; it starts
+  with `--port 0` precisely so a busy 4096 is not fatal.
+- Every startup path must terminate: success, a typed failure, or the timeout.
+  Do not add a code path that can wait forever.
+- On quit, wait for the child to actually exit before the process ends, so no
+  orphaned server keeps holding the port.
+
 ## Platform parity
 
 - Remote projects must keep using the server filesystem. The native folder

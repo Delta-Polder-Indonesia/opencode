@@ -4,12 +4,27 @@
  * for it to answer, rebuilds the main/preload bundles, then launches Electron
  * pointing at the dev server.
  *
- * Run the backend separately (from packages/opencode):
- *   bun run ./src/index.ts serve --port 4096
+ * By default the shell starts and supervises its own backend from
+ * `resources/backend` (stage it once with `bun run script/backend.ts`).
+ *
+ * To use a server you run yourself instead, set OPENCODE_DESKTOP_SERVER_URL —
+ * the shell will connect to it and will not spawn or kill anything:
+ *   cd packages/opencode && bun run ./src/index.ts serve --port 4096
+ *   OPENCODE_DESKTOP_SERVER_URL=http://127.0.0.1:4096 bun run dev
  */
+import { existsSync } from "node:fs"
 import { join } from "node:path"
 
 const root = join(import.meta.dir, "..")
+const backendBinary = join(root, "resources", "backend", process.platform === "win32" ? "opencode.exe" : "opencode")
+
+if (!process.env.OPENCODE_DESKTOP_SERVER_URL && !existsSync(backendBinary)) {
+  console.warn(
+    `[desktop] no backend executable at ${backendBinary}.\n` +
+      `[desktop] run \`bun run script/backend.ts\` to build one, or set ` +
+      `OPENCODE_DESKTOP_SERVER_URL to use a server you start yourself.`,
+  )
+}
 const rendererUrl = process.env.OPENCODE_DESKTOP_RENDERER_URL ?? "http://127.0.0.1:4455"
 
 const vite = Bun.spawn(["bun", "x", "vite", "--config", "vite.renderer.config.ts"], {

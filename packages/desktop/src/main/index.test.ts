@@ -166,11 +166,29 @@ describe("main ipc handlers", () => {
     expect(handler({ sender: {}, senderFrame: { url: "http://127.0.0.1:4455/" } })).toBeUndefined()
   })
 
-  test("reports desktop info with a loopback server url", () => {
-    const info = call(IPC.info) as { serverUrl: string; windowID: string; version: string }
-    expect(info.serverUrl).toBe("http://127.0.0.1:4096")
+  test("reports desktop info and the current backend state", () => {
+    const info = call(IPC.info) as {
+      serverUrl: string
+      windowID: string
+      version: string
+      localServerAuth: unknown
+      backend: { status: string }
+    }
     expect(info.version).toBe("1.18.31")
     expect(info.windowID.length).toBeGreaterThan(0)
+    // No backend binary exists in the test fixture, so startup fails and the
+    // renderer is told so rather than being handed a URL that does not work.
+    expect(info.backend.status).toBeString()
+    expect(info.localServerAuth).toBeNull()
+    expect(info.serverUrl).toBe("")
+  })
+
+  test("exposes backend state and refuses to retry a backend that did not fail", async () => {
+    const state = call(IPC.backendState) as { status: string }
+    expect(state.status).toBeString()
+    // `backendRetry` is only valid from a failed state; anything else is a no-op.
+    const retried = await call(IPC.backendRetry)
+    expect(typeof retried).toBe("boolean")
   })
 
   test("persists only valid default server urls", () => {

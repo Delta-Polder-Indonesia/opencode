@@ -20,6 +20,8 @@ export const IPC = {
   runMenuAction: "desktop:menu:run-action",
   publishTranslations: "desktop:i18n:publish",
   restart: "desktop:app:restart",
+  backendState: "desktop:backend:state",
+  backendRetry: "desktop:backend:retry",
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]
@@ -30,7 +32,20 @@ export const IPC_CHANNELS: readonly IpcChannel[] = Object.values(IPC)
 export const IPC_EVENT = {
   menuAction: "desktop:event:menu-action",
   menuCommand: "desktop:event:menu-command",
+  backendState: "desktop:event:backend-state",
 } as const
+
+/**
+ * Backend lifecycle as the renderer sees it. Deliberately free of process
+ * details (pid, binary path, credentials): the renderer only needs to know
+ * whether it can connect, and what to tell the user when it cannot.
+ */
+export type BackendStatus =
+  | { status: "starting" }
+  | { status: "ready"; url: string }
+  | { status: "external"; url: string }
+  | { status: "failed"; messageKey: string; detail?: string }
+  | { status: "stopped" }
 
 export type DesktopInfo = {
   version: string
@@ -40,6 +55,13 @@ export type DesktopInfo = {
   serverUrl: string
   /** Default server chosen by the user, when different from the local backend. */
   defaultServerUrl: string | null
+  /**
+   * Credentials for the bundled loopback backend, which is password protected so
+   * other local users cannot drive it. Null when the backend is not ours.
+   */
+  localServerAuth: { username: string; password: string } | null
+  /** Current backend lifecycle state at the time the renderer asked. */
+  backend: BackendStatus
 }
 
 export type DirectoryPickerRequest = { title?: string; multiple?: boolean }
