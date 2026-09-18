@@ -235,16 +235,24 @@ if ($FromSource) {
   $prefix = @("run", "--cwd", (Join-Path $repoRoot "packages\opencode"), "src\index.ts")
 }
 
-$binary = Get-Command $launcher -ErrorAction SilentlyContinue
-if (-not $binary) {
+$candidates = @(Get-Command $launcher -All -ErrorAction SilentlyContinue)
+if ($candidates.Count -eq 0) {
   Write-Head "$launcher tidak ditemukan di PATH"
   Write-Note "Pasang dulu:  npm i -g opencode-ai@latest   (atau scoop install opencode)"
   Write-Note "Kalau menjalankan dari checkout ini, pakai -FromSource."
   Write-Note "Atau tunjuk langsung: -Opencode `"C:\path\ke\opencode.exe`""
   exit 1
 }
-# Start-Process butuh path lengkap; kalau launcher-nya .cmd (mis. bun dari npm)
-# nama telanjang tidak selalu bisa ditemukan.
+# npm memasang beberapa shim di Windows (.cmd, .ps1, dan kadang .exe). Shim .ps1
+# berjalan di dalam sesi PowerShell ini dan diakhiri `exit`, sehingga bisa
+# mematikan skrip ini sebelum server sempat hidup. Jadi utamakan .exe/.cmd.
+$preferred = $candidates | Where-Object { $_.Source -match '\.(exe|cmd|bat)$' } | Select-Object -First 1
+$binary = if ($preferred) { $preferred } else { $candidates[0] }
+if ($binary.Source -match '\.ps1$') {
+  Write-Note "Catatan: '$launcher' hanya tersedia sebagai shim .ps1; kalau server langsung berhenti,"
+  Write-Note "jalankan lewat opencode.cmd atau tunjuk binary-nya dengan -Opencode <path>."
+}
+# Start-Process butuh path lengkap; nama telanjang tidak selalu bisa ditemukan.
 $launcherPath = if ($binary.Source) { $binary.Source } else { $launcher }
 
 $viteCommand = @()

@@ -251,8 +251,12 @@ Test-Case "-NonInteractive tanpa password gagal (exit 1)" {
 }
 
 # --- 8. Server opencode sungguhan (opsional) -------------------------------
-$e2eCommand = Get-Command $Opencode -ErrorAction SilentlyContinue
+# Sama seperti dev-safe.ps1: utamakan shim .exe/.cmd, jangan .ps1.
+$e2eCandidates = @(Get-Command $Opencode -All -ErrorAction SilentlyContinue)
+$e2eCommand = $e2eCandidates | Where-Object { $_.Source -match '\.(exe|cmd|bat)$' } | Select-Object -First 1
+if (-not $e2eCommand) { $e2eCommand = $e2eCandidates | Select-Object -First 1 }
 $e2eSkip = -not $IncludeE2E -or -not $e2eCommand
+if ($e2eCommand) { $e2eTarget = $e2eCommand.Source } else { $e2eTarget = $Opencode }
 
 Test-Case "Server nyata: hanya 127.0.0.1, 401 tanpa kredensial, 200 dengan kredensial" -Skip:$e2eSkip {
   $password = "ci-" + [guid]::NewGuid().ToString("N").Substring(0, 8)
@@ -261,7 +265,7 @@ Test-Case "Server nyata: hanya 127.0.0.1, 401 tanpa kredensial, 200 dengan krede
   $errFile = [System.IO.Path]::GetTempFileName()
   $previousPassword = $env:OPENCODE_SERVER_PASSWORD
   $arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Target, "-NonInteractive", "-Mode", "serve",
-    "-Port", "$E2EPort", "-Opencode", $Opencode)
+    "-Port", "$E2EPort", "-Opencode", $e2eTarget)
   $line = ($arguments | ForEach-Object { Quote-Arg $_ }) -join " "
   $process = $null
   $observed = @()
@@ -273,11 +277,13 @@ Test-Case "Server nyata: hanya 127.0.0.1, 401 tanpa kredensial, 200 dengan krede
     $exitState = if ($process) { if ($process.HasExited) { "keluar dengan kode $($process.ExitCode)" } else { "masih hidup" } } else { "tidak dijalankan" }
     $listeners = (Get-ListenerAddresses $E2EPort) -join ", "
     $version = ""
-    try { $version = (& $Opencode --version 2>&1 | Out-String).Trim() } catch { $version = "gagal query versi: $($_.Exception.Message)" }
-    $command = Get-Command $Opencode -ErrorAction SilentlyContinue
+    try { $version = (& $e2eTarget --version 2>&1 | Out-String).Trim() } catch { $version = "gagal query versi: $($_.Exception.Message)" }
+    $command = Get-Command $e2eTarget -ErrorAction SilentlyContinue
+    $allCandidates = @(Get-Command $Opencode -All -ErrorAction SilentlyContinue | ForEach-Object { "$($_.CommandType):$($_.Source)" }) -join "; "
     @(
       "perintah   : $line"
-      "opencode   : $Opencode (jenis: $($command.CommandType)) versi: $version"
+      "opencode   : $e2eTarget (jenis: $($command.CommandType)) versi: $version"
+      "kandidat   : $allCandidates"
       "proses     : $exitState"
       "status HTTP yang terlihat: $(if ($observed.Count) { $observed -join ', ' } else { 'tidak ada jawaban' })"
       "pendengar  : $(if ($listeners) { $listeners } else { 'tidak ada yang mendengarkan di port ' + $E2EPort })"

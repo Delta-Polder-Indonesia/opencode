@@ -69,9 +69,18 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_e2e }}
         run: |
           npm install -g opencode-ai@latest
-          $command = Get-Command opencode -ErrorAction SilentlyContinue
+          Write-Host "== Semua kandidat perintah opencode =="
+          Get-Command opencode -All -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "  $($_.CommandType)  $($_.Source)"
+          }
+          # npm membuat beberapa shim di Windows (.cmd, .ps1, .exe). Untuk dijalankan
+          # sebagai proses, .cmd/.exe paling dapat diandalkan; .ps1 dijalankan di
+          # dalam sesi PowerShell dan bisa mengakhiri skrip pemanggilnya.
+          $candidates = Get-Command opencode -All -ErrorAction SilentlyContinue
+          $command = $candidates | Where-Object { $_.Source -match '\.(exe|cmd)$' } | Select-Object -First 1
+          if (-not $command) { $command = $candidates | Select-Object -First 1 }
           if (-not $command) { throw "opencode tidak ada di PATH setelah npm install -g" }
-          Write-Host "opencode: $($command.Source)"
+          Write-Host "Dipilih  : $($command.Source)"
           "opencode_path=$($command.Source)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Uji perilaku dev-safe.ps1
@@ -104,13 +113,36 @@ jobs:
           Write-Host "== netstat port $env:E2E_PORT =="
           netstat -ano | Select-String ":$env:E2E_PORT" | ForEach-Object { Write-Host $_.Line.Trim() }
 
-          Write-Host "== Coba jalankan server langsung (20 detik, tanpa dev-safe.ps1) =="
+          Write-Host "== Isi shim npm dan paketnya =="
+          $prefix = (npm prefix -g).Trim()
+          Write-Host "npm prefix: $prefix"
+          Get-ChildItem $prefix -Filter "opencode*" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "  shim: $($_.Name) ($($_.Length) byte)"
+          }
+          foreach ($shim in @("opencode.ps1", "opencode.cmd")) {
+            $path = Join-Path $prefix $shim
+            if (Test-Path $path) {
+              Write-Host "-- isi $shim --"
+              Get-Content $path | ForEach-Object { Write-Host "  $_" }
+            }
+          }
+          $binDir = Join-Path $prefix "node_modules\opencode-ai\bin"
+          Write-Host "-- isi $binDir --"
+          Get-ChildItem $binDir -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "  $($_.Name) ($([Math]::Round($_.Length / 1MB, 2)) MB)"
+          }
+
+          Write-Host "== Coba jalankan server langsung (25 detik, tanpa dev-safe.ps1) =="
           $outFile = Join-Path $env:RUNNER_TEMP "direct-serve.out"
           $errFile = Join-Path $env:RUNNER_TEMP "direct-serve.err"
           $env:OPENCODE_SERVER_PASSWORD = "ci-diagnostic"
-          $process = Start-Process -FilePath "opencode" -ArgumentList @("serve", "--port", $env:E2E_PORT, "--hostname", "127.0.0.1") `
+          $directCandidates = Get-Command opencode -All -ErrorAction SilentlyContinue
+          $direct = $directCandidates | Where-Object { $_.Source -match '\.(exe|cmd)$' } | Select-Object -First 1
+          if (-not $direct) { $direct = $directCandidates | Select-Object -First 1 }
+          Write-Host "Menjalankan: $($direct.Source) serve --port $env:E2E_PORT --hostname 127.0.0.1"
+          $process = Start-Process -FilePath $direct.Source -ArgumentList @("serve", "--port", $env:E2E_PORT, "--hostname", "127.0.0.1") `
             -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-          Start-Sleep -Seconds 20
+          Start-Sleep -Seconds 25
           $process.Refresh()
           if ($process.HasExited) { Write-Host "server langsung sudah keluar, kode $($process.ExitCode)" }
           else { Write-Host "server langsung masih hidup setelah 20 detik"; & taskkill /PID $process.Id /T /F 2>&1 | Out-Null }
