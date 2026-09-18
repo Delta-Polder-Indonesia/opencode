@@ -54,21 +54,48 @@ jobs:
 
       - name: Cek sintaks PowerShell (parser asli)
         run: |
+          # Catatan: jangan pakai nama variabel $error — itu variabel otomatis
+          # PowerShell yang read-only dan membuat skrip ini berhenti.
           $files = @("script/dev-safe.ps1", "script/dev-safe.tests.ps1")
           $failed = $false
           foreach ($file in $files) {
-            $parseErrors = $null
-            $null = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$parseErrors)
-            if ($parseErrors.Count -gt 0) {
-              $failed = $true
-              foreach ($error in $parseErrors) {
-                Write-Host "::error file=$file,line=$($error.Extent.StartLineNumber)::$($error.Message)"
+            try {
+              $tokens = $null
+              $parseErrors = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$parseErrors)
+              if ($parseErrors.Count -gt 0) {
+                $failed = $true
+                foreach ($parseError in $parseErrors) {
+                  Write-Host "::error file=$file,line=$($parseError.Extent.StartLineNumber)::$($parseError.Message)"
+                }
+              } else {
+                Write-Host "Sintaks OK: $file ($($tokens.Count) token)"
               }
-            } else {
-              Write-Host "Sintaks OK: $file"
+            } catch {
+              $failed = $true
+              Write-Host "::error file=$file::Pemeriksaan sintaks gagal: $($_.Exception.Message)"
             }
           }
           if ($failed) { exit 1 }
+
+      - name: Pastikan nama variabel terlarang tidak dipakai
+        run: |
+          # $error, $args, $input, $host, $true/$false dll. adalah variabel
+          # otomatis PowerShell; menimpanya membuat skrip berhenti saat runtime.
+          $forbidden = @('$error', '$true', '$false', '$host', '$input', '$args')
+          $violations = 0
+          foreach ($file in @("script/dev-safe.ps1", "script/dev-safe.tests.ps1")) {
+            foreach ($name in $forbidden) {
+              $pattern = "foreach\s*\(\s*" + [regex]::Escape($name) + "\s+in\b"
+              $found = Select-String -Path $file -Pattern $pattern -ErrorAction SilentlyContinue
+              foreach ($match in $found) {
+                $violations++
+                Write-Host "::error file=$file,line=$($match.LineNumber)::$name adalah variabel otomatis read-only dan tidak boleh dipakai sebagai variabel loop"
+              }
+            }
+          }
+          if ($violations -gt 0) { exit 1 }
+          Write-Host "Tidak ada penimpaan variabel otomatis."
 
       - name: Pasang opencode dari npm
         id: install
@@ -107,11 +134,18 @@ jobs:
         env:
           E2E_PORT: "42999"
         run: |
+          # Step ini hanya untuk membantu diagnosa, jadi tidak boleh ikut gagal.
+          $ErrorActionPreference = "Continue"
+          function Show-Log([string]$Label, [string]$Path) {
+            Write-Host "-- $Label --"
+            Get-Content $Path -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+          }
+
           Write-Host "== Versi opencode =="
           $command = Get-Command opencode -ErrorAction SilentlyContinue
           if ($command) {
             Write-Host "path: $($command.Source) ($($command.CommandType))"
-            & opencode --version 2>&1 | ForEach-Object { Write-Host $_ }
+            try { & $command.Source --version 2>&1 | ForEach-Object { Write-Host $_ } } catch { Write-Host "gagal query versi: $($_.Exception.Message)" }
           } else {
             Write-Host "opencode tidak ada di PATH"
           }
@@ -145,19 +179,25 @@ jobs:
           $directCandidates = Get-Command opencode -All -ErrorAction SilentlyContinue
           $direct = $directCandidates | Where-Object { $_.Source -match '\.(exe|cmd)$' } | Select-Object -First 1
           if (-not $direct) { $direct = $directCandidates | Select-Object -First 1 }
-          Write-Host "Menjalankan: $($direct.Source) serve --port $env:E2E_PORT --hostname 127.0.0.1"
-          $process = Start-Process -FilePath $direct.Source -ArgumentList @("serve", "--port", $env:E2E_PORT, "--hostname", "127.0.0.1") `
-            -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-          Start-Sleep -Seconds 25
-          $process.Refresh()
-          if ($process.HasExited) { Write-Host "server langsung sudah keluar, kode $($process.ExitCode)" }
-          else { Write-Host "server langsung masih hidup setelah 20 detik"; & taskkill /PID $process.Id /T /F 2>&1 | Out-Null }
-          Write-Host "-- stdout --"
-          Get-Content $outFile -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
-          Write-Host "-- stderr --"
-          Get-Content $errFile -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
-          Write-Host "== netstat setelah percobaan =="
-          netstat -ano | Select-String ":$env:E2E_PORT" | ForEach-Object { Write-Host $_.Line.Trim() }
+          if (-not $direct) {
+            Write-Host "Tidak ada opencode untuk dijalankan; lewati percobaan server langsung."
+          } else {
+            Write-Host "Menjalankan: $($direct.Source) serve --port $env:E2E_PORT --hostname 127.0.0.1"
+            try {
+              $process = Start-Process -FilePath $direct.Source -ArgumentList @("serve", "--port", $env:E2E_PORT, "--hostname", "127.0.0.1") `
+                -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+              Start-Sleep -Seconds 25
+              $process.Refresh()
+              if ($process.HasExited) { Write-Host "server langsung sudah keluar, kode $($process.ExitCode)" }
+              else { Write-Host "server langsung masih hidup setelah 25 detik"; & taskkill /PID $process.Id /T /F 2>&1 | Out-Null }
+            } catch {
+              Write-Host "Percobaan server langsung gagal dijalankan: $($_.Exception.Message)"
+            }
+            Show-Log "stdout" $outFile
+            Show-Log "stderr" $errFile
+            Write-Host "== netstat setelah percobaan =="
+            netstat -ano | Select-String ":$env:E2E_PORT" | ForEach-Object { Write-Host $_.Line.Trim() }
+          }
 
       - name: Lampirkan ringkasan hasil
         if: always()

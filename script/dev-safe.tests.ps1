@@ -428,23 +428,25 @@ Test-Case "-WithDevUi: tunggu server siap, jalankan Vite dengan --host 127.0.0.1
     $addresses = Get-ListenerAddresses $serverPort
     Assert-True ($addresses -contains "127.0.0.1") "server tidak mendengarkan di 127.0.0.1 (alamat: $($addresses -join ', '))"
     Assert-True (-not ($addresses -contains "0.0.0.0")) "server mendengarkan di 0.0.0.0 (alamat: $($addresses -join ', '))"
+
+    # Matikan seperti Ctrl+C, lalu pastikan anak-anaknya ikut mati.
+    & taskkill /PID $devSafe.Id /T /F 2>&1 | Out-Null
+    $devSafe.WaitForExit(15000) | Out-Null
+    Start-Sleep -Seconds 2
+    $leftover = Get-ListenerAddresses $serverPort
+    Assert-True ($leftover.Count -eq 0) "masih ada yang mendengarkan di port $serverPort setelah proses dimatikan: $($leftover -join ', ')"
   } finally {
     if ($devSafe) {
       $devSafe.Refresh()
       if (-not $devSafe.HasExited) { & taskkill /PID $devSafe.Id /T /F 2>&1 | Out-Null }
-      $devSafe.WaitForExit(15000) | Out-Null
     }
-    # Proses anak (server + shim Vite) harus ikut mati; port server harus bebas.
-    Start-Sleep -Seconds 2
-    $leftover = Get-ListenerAddresses $serverPort
-    if ($devSafe -and $leftover.Count -gt 0) {
-      throw "setelah dev-safe.ps1 dimatikan, masih ada yang mendengarkan di port $serverPort : $($leftover -join ', ')"
+    Remove-Item -LiteralPath $shim, $marker, $outFile, $errFile -ErrorAction SilentlyContinue
+    # Rapikan direktori yang kita buat sendiri, hanya kalau benar-benar kosong.
+    foreach ($dir in @($shimDir, (Split-Path -Parent $shimDir))) {
+      if ((Test-Path $dir) -and -not (Get-ChildItem $dir -Force -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue
+      }
     }
-
-    Remove-Item -LiteralPath $shim, $marker -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $outFile, $errFile -ErrorAction SilentlyContinue
-    if (-not (Test-Path $shimDir)) { New-Item -ItemType Directory -Force -Path $shimDir | Out-Null }
-    if (-not (Get-ChildItem $shimDir -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $shimDir -ErrorAction SilentlyContinue }
     if ($null -eq $previousPassword) {
       Remove-Item Env:OPENCODE_SERVER_PASSWORD -ErrorAction SilentlyContinue
     } else {
