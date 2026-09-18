@@ -1,10 +1,13 @@
 # Perencanaan Pengembangan Desktop AI IDE
 
 Tanggal rencana: **19 September 2026**.
-Status: **Tahap 0 sebagian selesai; Tahap 1A dan 1B terimplementasi (backend
-terverifikasi terhadap server nyata, integrasi Electron runtime belum
-tervalidasi); Tahap 1D belum dimulai**. Lihat bagian [Progres](#progres) untuk
-bukti per tahap.
+Status: **Tahap 0 sebagian selesai; Tahap 1A dan 1B SELESAI dan tervalidasi di
+Windows 10 x64 nyata — aplikasi Electron terbuka dan UI OpenCode ter-render,
+dengan backend lokal yang dijalankan sendiri oleh aplikasi; Tahap 1C sebagian;
+Tahap 1D belum dimulai**. Lihat bagian [Progres](#progres) untuk bukti per tahap.
+
+Yang **belum** diuji pada UI yang sudah hidup: folder picker, chat end-to-end,
+dan kebersihan proses saat keluar (tidak ada `opencode.exe` yatim).
 
 ## Tujuan
 
@@ -129,8 +132,9 @@ tersedia, jangan menganggap build desktop Windows telah tervalidasi.
       dengan benar; jangan menghentikan server eksternal milik pengguna.
       `before-quit` ditunda sampai anak benar-benar keluar; SIGTERM ke process
       group lalu eskalasi SIGKILL. Diverifikasi: port dilepas, tidak ada proses yatim.
-- [ ] **Terblokir** — Uji pemulihan setelah crash serta persistensi sesi/proyek
-      setelah dibuka ulang. Butuh Electron runtime yang belum tersedia di sandbox.
+- [ ] Uji pemulihan setelah crash serta persistensi sesi/proyek setelah dibuka
+      ulang. **Tidak lagi terblokir**: Electron kini berjalan di mesin Windows
+      pengguna, jadi ini tinggal dijalankan (belum dilakukan).
 
 ### 1C. Keamanan
 
@@ -417,18 +421,17 @@ frame asing.
   melalui mock.
 - **Tidak ada installer.** `electron-builder.yml` belum pernah dijalankan; belum
   ada artefak Windows, belum ada code signing, dan **tidak ada klaim siap rilis**.
-- **Backend belum otomatis** (Tahap 1B). Saat ini backend harus dijalankan manual
-  di `127.0.0.1:4096`, sehingga janji "tanpa menjalankan server manual" belum
-  terpenuhi.
+  > **Catatan (2026-09-19):** dua kendala di atas sudah teratasi dan dipertahankan
+  > di sini hanya sebagai riwayat. Backend kini otomatis (Tahap 1B), dan aplikasi
+  > Electron sudah terbuka serta ter-render di Windows 10 x64 nyata. Yang masih
+  > berlaku: **belum ada installer dan belum ada code signing.**
 
 **Langkah berikutnya**
 
-1. Tahap 1B: bundel/supervisi backend — pemilihan port, health check, batas waktu
-   startup, UI loading/error, dan penghentian proses anak saat keluar.
-2. Jalankan `bun run dev` di mesin Windows/Linux berdisplay untuk memvalidasi
-   jendela, dialog folder, menu, dan penyimpanan secara nyata.
-3. Setelah 1B stabil, jalankan `electron-builder` untuk installer Windows x64 dan
-   uji install/launch/uninstall pada Windows bersih (Tahap 1D).
+1. Uji pada UI yang sudah hidup: folder picker, chat end-to-end, dan pastikan
+   tidak ada `opencode.exe` yatim setelah keluar.
+2. Tahap 1D: `electron-builder --win --x64`, lalu uji install/launch/uninstall
+   pada Windows bersih.
 
 #### 2026-09-18 — Tahap 1B (Backend otomatis dan lifecycle)
 
@@ -716,6 +719,50 @@ menjadi penjelasan bahwa ini normal pada peluncuran pertama.
 
 Verifikasi: `bun test src` **99 pass / 0 fail** (1 tes regresi untuk pembersihan
 sebelum mount), build bundel sukses, oxlint dan prettier bersih.
+
+---
+
+### RINGKASAN PENUTUP — Tahap 1A + 1B SELESAI (2026-09-19)
+
+**Tahap 1B benar-benar berhasil dan tervalidasi di perangkat keras nyata**
+(Windows 10 x64, build 19045). Aplikasi Electron terbuka dari perintah dev,
+menjalankan backend-nya sendiri, dan me-render UI OpenCode yang sudah ada.
+
+**Yang terbukti bekerja end-to-end di Windows nyata**
+
+| Hal                                         | Bukti                                                |
+| ------------------------------------------- | ---------------------------------------------------- |
+| Backend dikompilasi jadi executable mandiri | smoke test lulus, versi `1.18.31-desktop`            |
+| Aplikasi menjalankan backend sendiri        | UI hanya mount setelah backend melapor sehat         |
+| Backend hanya loopback + berpassword        | `verify-backend.ts` 8/8, 401 tanpa/ salah kredensial |
+| Jendela Electron terbuka                    | dikonfirmasi pengguna                                |
+| Preload bridge termuat                      | UI ter-render; mustahil tanpa bridge                 |
+| UI OpenCode ter-render                      | dikonfirmasi pengguna                                |
+
+**Perjalanan debug di perangkat nyata** — enam cacat ditemukan, semuanya
+tertutup tes:
+
+1. Pohon proses tidak mati di Windows (`taskkill /T`, bukan `child.kill()`).
+2. Port 4455 tertinggal terpakai (`bun x vite` hanya peluncur).
+3. Batas tunggu Vite 60 detik terlalu pendek; start dingin butuh 139 detik.
+4. `.github/TEAM_MEMBERS` tidak ada → **setiap** build gagal dengan ENOENT.
+5. `__dirname` diganti bundler saat build → preload dicari di `src/`, dan ini
+   **akan ikut merusak installer** kalau tidak tertangkap sekarang.
+6. `require.main` kosong di Electron → path preload jatuh ke cwd.
+
+**Angka akhir:** desktop **99 pass / 0 fail**, `packages/app` 724 pass / 0 fail
+(tanpa regresi), oxlint 0 warning, prettier bersih, build bundel sukses.
+
+**Yang BELUM diuji (jujur, bukan klaim):**
+
+- Folder picker, chat end-to-end, terminal di dalam UI yang sudah hidup.
+- Kebersihan proses saat keluar — **belum diverifikasi di Windows**. Jalur
+  `taskkill /T` sudah ditulis dan diuji lewat mock, tetapi belum pernah
+  dijalankan sungguhan. Ini yang paling perlu dicek.
+- Pemulihan setelah crash dan persistensi sesi.
+- **Installer: belum ada sama sekali. Tanpa code signing. Bukan siap rilis.**
+
+---
 
 **Langkah berikutnya**
 
