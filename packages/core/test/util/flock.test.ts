@@ -120,7 +120,8 @@ describe("util.flock", () => {
     const done = path.join(tmp.path, "done.log")
     const active = path.join(tmp.path, "active")
     const key = "flock:stress"
-    const n = 16
+    // 8 workers is plenty to force real contention; each is a fresh bun process.
+    const n = 8
 
     const out = await Promise.all(
       Array.from({ length: n }, () =>
@@ -132,6 +133,9 @@ describe("util.flock", () => {
           holdMs: 30,
           staleMs: 1_000,
           timeoutMs: 15_000,
+          // Tight backoff: this test checks mutual exclusion, not retry pacing.
+          baseDelayMs: 10,
+          maxDelayMs: 100,
         }),
       ),
     )
@@ -166,7 +170,9 @@ describe("util.flock", () => {
       const err = await Flock.withLock(key, async () => {}, {
         dir,
         staleMs: 10_000,
-        timeoutMs: 1_000,
+        timeoutMs: 300,
+        baseDelayMs: 20,
+        maxDelayMs: 50,
         onWait: (tick) => {
           seen.push(tick.key)
         },
@@ -192,7 +198,7 @@ describe("util.flock", () => {
       dir,
       ready,
       holdMs: 20_000,
-      staleMs: 500,
+      staleMs: 200,
       timeoutMs: 30_000,
     })
 
@@ -207,8 +213,10 @@ describe("util.flock", () => {
       },
       {
         dir,
-        staleMs: 500,
+        staleMs: 200,
         timeoutMs: 8_000,
+        baseDelayMs: 20,
+        maxDelayMs: 100,
       },
     )
 
@@ -375,7 +383,7 @@ describe("util.flock", () => {
       },
       {
         dir,
-        staleMs: 500,
+        staleMs: 200,
         timeoutMs: 3_000,
       },
     ).catch((err) => err)
@@ -393,8 +401,10 @@ describe("util.flock", () => {
       },
       {
         dir,
-        staleMs: 500,
+        staleMs: 200,
         timeoutMs: 6_000,
+        baseDelayMs: 20,
+        maxDelayMs: 100,
       },
     )
     expect(hit).toBe(true)
