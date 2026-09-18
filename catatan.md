@@ -1,7 +1,9 @@
 # Perencanaan Pengembangan Desktop AI IDE
 
 Tanggal rencana: **19 September 2026**.
-Status: **perencanaan; implementasi Electron belum dimulai**.
+Status: **Tahap 0 sebagian selesai, Tahap 1A terimplementasi (belum tervalidasi
+runtime); Tahap 1B/1D belum dimulai**. Lihat bagian
+[Progres](#progres) untuk bukti per tahap.
 
 ## Tujuan
 
@@ -24,6 +26,8 @@ serta kriteria kelulusan sebelum melanjutkan tahap berikutnya.
   Kontrak ini belum berarti implementasi Electron tersedia.
 - Paket `packages/desktop` tidak ditemukan pada checkout yang diaudit. Tautan
   desktop upstream dalam README bukan installer untuk fork ini.
+  **Pembaruan 2026-09-18:** `packages/desktop` kini ada (Tahap 1A). Installer
+  masih belum dibuat.
 - `packages/opencode/script/build.ts` memiliki jalur build binary dan embedding
   UI web; kelayakan bundling sebagai backend desktop harus diuji.
 - Terminal, file viewer, review diff, infrastruktur LSP, dan backend background
@@ -33,6 +37,8 @@ serta kriteria kelulusan sebelum melanjutkan tahap berikutnya.
   tetapi belum lolos pengujian runtime. Jangan tandai sebagai fitur rilis selesai.
 - Pada saat rencana ditulis, Bun dan dependensi belum tersedia di lingkungan
   kerja; typecheck, tes runtime, dan benchmark belum dapat dijalankan.
+  **Pembaruan 2026-09-18:** Bun 1.3.14 dan dependensi sudah terpasang; typecheck
+  serta tes unit berjalan. Runtime aplikasi dan benchmark masih terblokir.
 - Target distribusi awal yang diusulkan: **Windows x64**. Konfirmasikan OS dan
   arsitektur perangkat pengguna sebelum menetapkan konfigurasi installer.
 - Aplikasi mandiri tidak berarti seluruh pekerjaan offline. Provider AI cloud
@@ -56,16 +62,26 @@ serta kriteria kelulusan sebelum melanjutkan tahap berikutnya.
 
 ## Tahap 0 — Persiapan dan baseline
 
-- [ ] Konfirmasikan target OS/arsitektur pertama dan kebutuhan penggunaan lokal/remote.
-- [ ] Siapkan Bun sesuai versi proyek serta instal dependensi.
-- [ ] Jalankan baseline typecheck dan tes paket terkait; pisahkan kegagalan lama
-      dari regresi baru.
-- [ ] Jalankan aplikasi untuk memverifikasi alur proyek, sesi, terminal, dan diff.
-- [ ] Verifikasi perubahan folder picker dan thinking ringkas, termasuk pengguna
-      web, desktop lokal, server remote, dan membuka ulang reasoning lama.
-- [ ] Catat benchmark production sebelum perubahan session/timeline berikutnya.
-- [ ] Pastikan strategi build UI/backend dan kebutuhan aset/native dependency
-      dapat dipenuhi pada target Windows.
+- [x] Konfirmasikan target OS/arsitektur pertama dan kebutuhan penggunaan lokal/remote.
+      Target tetap **Windows x64**; koneksi lokal memakai backend loopback, koneksi
+      remote tetap lewat alur server yang sudah ada.
+- [x] Siapkan Bun sesuai versi proyek serta instal dependensi.
+      Bun `1.3.14` (sesuai `packageManager`) dipasang lewat npm karena `bun.sh`
+      diblokir di sandbox; `bun install` perlu `NODE_EXTRA_CA_CERTS`.
+- [x] Jalankan baseline typecheck dan tes paket terkait; pisahkan kegagalan lama
+      dari regresi baru. Rincian pada entri progres di bawah.
+- [ ] **Terblokir** — Jalankan aplikasi untuk memverifikasi alur proyek, sesi,
+      terminal, dan diff. Backend belum dijalankan penuh di sandbox ini
+      (`packages/opencode` ter-OOM saat typecheck; runtime end-to-end belum diuji).
+- [~] Verifikasi perubahan folder picker dan thinking ringkas. **Sebagian**:
+      terverifikasi lewat unit test dan pembacaan kode (web, desktop lokal, remote);
+      verifikasi runtime membuka ulang reasoning lama masih terblokir.
+- [ ] **Terblokir** — Catat benchmark production sebelum perubahan
+      session/timeline berikutnya. Sesi ini tidak menyentuh kode session/timeline,
+      jadi benchmark belum wajib; belum dapat dijalankan di sandbox.
+- [~] Pastikan strategi build UI/backend dan kebutuhan aset/native dependency
+      dapat dipenuhi pada target Windows. **Sebagian**: build UI renderer terbukti
+      berhasil; binary Electron dan backend bundel belum dapat diunduh/diuji di sini.
 
 **Kriteria selesai:** lingkungan pengembangan dapat menjalankan aplikasi dan tes;
 status baseline serta kendala terdokumentasi. Jika pengujian Windows belum
@@ -75,14 +91,18 @@ tersedia, jangan menganggap build desktop Windows telah tervalidasi.
 
 ### 1A. Kerangka dan integrasi UI
 
-- [ ] Buat `packages/desktop` dengan main process, preload, renderer entry,
+- [x] Buat `packages/desktop` dengan main process, preload, renderer entry,
       konfigurasi build, serta script pengembangan.
-- [ ] Gunakan kembali UI yang ada melalui `PlatformProvider`; jangan menduplikasi
+- [x] Gunakan kembali UI yang ada melalui `PlatformProvider`; jangan menduplikasi
       seluruh aplikasi dan jangan hanya membungkus situs upstream.
-- [ ] Implementasikan dialog folder native, menu dasar, membuka tautan eksternal
+      Renderer hanya berisi entry + implementasi `Platform`; seluruh UI diimpor
+      dari `@opencode-ai/app`.
+- [x] Implementasikan dialog folder native, menu dasar, membuka tautan eksternal
       secara aman, dan penyimpanan data aplikasi sesuai lokasi OS.
-- [ ] Pastikan proyek remote tetap menggunakan filesystem server, bukan dialog
+      Belum tervalidasi runtime (binary Electron tidak tersedia di sandbox).
+- [x] Pastikan proyek remote tetap menggunakan filesystem server, bukan dialog
       folder lokal yang menghasilkan path tidak relevan.
+      `directoryPickerKind()` hanya memilih dialog native ketika koneksi lokal.
 
 ### 1B. Backend otomatis dan lifecycle
 
@@ -99,12 +119,20 @@ tersedia, jangan menganggap build desktop Windows telah tervalidasi.
 
 ### 1C. Keamanan
 
-- [ ] Gunakan `nodeIntegration: false`, `contextIsolation: true`, dan sandbox renderer.
-- [ ] Batasi API preload/IPC; validasi pengirim, argumen, path, dan operasi yang diizinkan.
-- [ ] Backend desktop lokal bind hanya ke loopback dengan autentikasi; jangan
-      membuka layanan eksekusi shell ke LAN secara default.
-- [ ] Jangan menaruh token di URL/log; tentukan penyimpanan kredensial aman OS.
-- [ ] Batasi navigasi, pembukaan jendela, origin, dan protokol tautan eksternal.
+- [x] Gunakan `nodeIntegration: false`, `contextIsolation: true`, dan sandbox renderer.
+      Diuji lewat `src/main/index.test.ts` dengan modul `electron` yang di-mock.
+- [x] Batasi API preload/IPC; validasi pengirim, argumen, path, dan operasi yang diizinkan.
+      Semua handler memakai `senderWindow()` + parser di `src/shared/ipc.ts`.
+- [~] Backend desktop lokal bind hanya ke loopback dengan autentikasi; jangan
+      membuka layanan eksekusi shell ke LAN secara default. **Sebagian**: shell
+      menolak URL backend non-loopback; autentikasi dan supervisi backend
+      menyusul di Tahap 1B.
+- [~] Jangan menaruh token di URL/log; tentukan penyimpanan kredensial aman OS.
+      **Sebagian**: log desktop melakukan redaksi token/API key; penyimpanan
+      kredensial OS belum ditentukan.
+- [x] Batasi navigasi, pembukaan jendela, origin, dan protokol tautan eksternal.
+      `will-navigate` + `setWindowOpenHandler` + CSP di HTML renderer; hanya
+      `http:`, `https:`, `mailto:` yang boleh dibuka keluar.
 - [ ] Pertahankan pemeriksaan izin agen dan pisahkan konten proyek dari API istimewa.
 
 ### 1D. Installer dan penerimaan
@@ -219,6 +247,171 @@ Kendala/risiko:
 Keputusan:
 Langkah berikutnya:
 ```
+
+### Progres
+
+#### 2026-09-18 — Tahap 0 (Persiapan dan baseline)
+
+**Status:** sebagian selesai; verifikasi runtime aplikasi **terblokir**.
+
+**Perubahan dan file terkait**
+
+- `packages/app/src/index.ts` — ekspor `loadInitialLocale` agar renderer desktop
+  dapat memuat locale awal tanpa mengimpor jalur internal `@/`.
+- `packages/app/src/i18n/parity.test.ts` — domain paritas "desktop" kini
+  kondisional. Fork ini memakai ulang kamus app (`DESKTOP_NATIVE_*`) dan tidak
+  memiliki `packages/desktop/src/renderer/i18n/`, sehingga dua tes selalu gagal
+  sebelum perubahan ini.
+- `bun.lock` — lockfile hasil `bun install` (sebelumnya tidak ada di repo).
+
+**Verifikasi (perintah dan hasil)**
+
+| Perintah | Hasil |
+| --- | --- |
+| `bun install` (dengan `NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt`) | berhasil |
+| `bun turbo typecheck --concurrency=1` | **16/17 lulus**; `opencode#typecheck` gagal |
+| `cd packages/app && bun run typecheck` | lulus |
+| `cd packages/app && bun run test:unit` | **724 pass / 0 fail** (sebelumnya 722/2) |
+| `cd packages/app && bun run test:browser` | 43 pass / 0 fail |
+| `cd packages/session-ui && bun test src` | 83 pass / 0 fail |
+| `cd packages/ui && bun run test` | 27 pass / 0 fail |
+| `cd script && bun test translate-app.test.ts` | 15 pass / 0 fail |
+| `cd packages/app && bun run build` | berhasil (mode web tidak rusak) |
+
+**Kegagalan lama vs regresi baru**
+
+- *Lama (bukan regresi):* `packages/app/src/i18n/parity.test.ts` gagal 2 tes di
+  HEAD `abc2353` karena merujuk direktori i18n desktop upstream yang tidak ada di
+  fork ini. Sudah diperbaiki; sekarang 0 fail.
+- *Lama (belum diperbaiki):* `opencode#typecheck` mati dengan `SIGKILL`. Ini
+  kehabisan memori pada sandbox (RAM 3 GB, 2 vCPU), bukan kesalahan tipe —
+  `tsgo` dibunuh OS tanpa mencetak diagnostik. Perlu diuji ulang di mesin
+  dengan RAM lebih besar.
+- *Regresi baru:* tidak ada.
+
+**Verifikasi PR #14 (folder picker + thinking ringkas)**
+
+- Folder picker: `packages/app/src/components/directory-picker.tsx` memakai
+  `directoryPickerKind()`; dialog native hanya untuk `platform === "desktop"`
+  **dan** `ServerConnection.local(server)`. Server remote tetap memakai
+  `DialogSelectDirectoryV2` yang menelusuri filesystem server. Tes
+  `directory-picker.test.ts` + `directory-picker-domain.test.ts`: 24 pass / 0 fail.
+- Thinking ringkas: `createReasoningDisclosure()` hanya menutup otomatis saat
+  streaming berhenti dan tidak mengatur ulang pilihan manual pengguna; badan
+  reasoning hanya dirender saat terbuka, jadi reasoning lama dapat dibuka ulang.
+- **Belum terverifikasi runtime.** Klik-per-klik di aplikasi nyata (web, desktop
+  lokal, server remote) belum dilakukan.
+
+**Benchmark session/timeline:** tidak dijalankan. Sesi ini tidak mengubah kode
+session/timeline, jadi aturan benchmark belum berlaku. Perubahan berikutnya di
+area itu wajib mencatat baseline production lebih dulu.
+
+**Kendala/risiko**
+
+- `bun.sh` dan GitHub release assets tidak dapat diakses dari sandbox; Bun
+  dipasang lewat registry npm.
+- `bun install` gagal tanpa `NODE_EXTRA_CA_CERTS` (verifikasi rantai sertifikat
+  tarball GitHub).
+- Binary Electron tidak dapat diunduh, sehingga tidak ada jendela Electron yang
+  benar-benar dibuka di sesi ini.
+
+**Langkah berikutnya:** jalankan ulang `opencode#typecheck` dan alur aplikasi
+end-to-end pada mesin dengan memori memadai.
+
+#### 2026-09-18 — Tahap 1A (Kerangka Electron dan integrasi UI)
+
+**Status:** implementasi selesai; **belum tervalidasi runtime**.
+
+**Perubahan dan file terkait** — paket baru `packages/desktop`:
+
+| Berkas | Isi |
+| --- | --- |
+| `src/main/index.ts` | Proses main: window ter-hardening, IPC tervalidasi, single-instance, kebijakan navigasi/permission |
+| `src/main/config.ts` | Penegakan URL backend loopback dan kebijakan navigasi |
+| `src/main/menu.ts` | Template menu dari `@opencode-ai/app/desktop-menu` (tidak ada definisi menu kedua) |
+| `src/main/storage.ts` | Penyimpanan key/value bernamespace di direktori data aplikasi OS |
+| `src/main/log.ts` | Log berkas dengan redaksi token/password/API key |
+| `src/preload/index.ts` | Satu-satunya jembatan `contextBridge`; tidak membocorkan `ipcRenderer` |
+| `src/shared/ipc.ts` | Kontrak IPC + parser validasi (bebas Electron/Node) |
+| `src/renderer/entry.tsx` | Entry renderer: memasang UI app lewat `PlatformProvider` |
+| `src/renderer/platform.ts` | Implementasi `Platform` desktop |
+| `src/renderer/bootstrap.ts` | Koneksi server awal (loopback) |
+| `index.html` | Host renderer dengan CSP ketat |
+| `vite.renderer.config.ts` | Build renderer memakai ulang plugin `@opencode-ai/app/vite` |
+| `script/build.ts`, `script/dev.ts` | Build (main/preload CJS + renderer Vite) dan launcher dev |
+| `electron-builder.yml` | Konfigurasi NSIS Windows x64 (**konfigurasi saja, belum dijalankan**) |
+| `AGENTS.md`, `README.md` | Aturan paket dan cara pakai |
+
+**Keputusan teknis**
+
+1. **Pakai ulang UI, bukan duplikasi.** Renderer hanya berisi entry dan adaptor
+   `Platform`; semua komponen diimpor dari `@opencode-ai/app`. Konfigurasi Vite
+   memakai ulang `@opencode-ai/app/vite` sehingga alias `@/`, Tailwind, Solid,
+   dan transform theme-preload identik dengan mode web.
+2. **Electron, bukan wrapper situs.** Renderer memuat berkas lokal (`file://`)
+   pada aplikasi terpaket; tidak ada pemuatan `app.opencode.ai`.
+3. **Electron 44.4.0 + electron-builder 26.15.3** (rilis stabil terbaru saat ini;
+   keduanya sudah tercantum di `trustedDependencies`/`minimumReleaseAgeExcludes`
+   root, menandakan pilihan yang sudah diantisipasi repo).
+4. **Preload harus CJS.** Preload dengan `sandbox: true` tidak mendukung ESM,
+   jadi `script/build.ts` membundel main dan preload sebagai CommonJS.
+5. **Base URL relatif** (`base: "./"`) supaya aset tetap termuat dari `file://`.
+6. **Locale IPC satu arah.** Renderer mengirim bundel `DESKTOP_NATIVE_*` ke main
+   lewat `publishTranslations`, divalidasi `parseDesktopNativeBundle()` sebelum
+   menu dibangun ulang. Tidak ada string Inggris yang di-hardcode di paket ini.
+7. **URL backend hanya loopback.** `OPENCODE_DESKTOP_SERVER_URL` diabaikan jika
+   bukan `http:` loopback; jika hasil akhirnya bukan loopback, aplikasi keluar.
+
+**Keamanan (Tahap 1C, diterapkan sejak awal)**
+
+- `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true`,
+  `webviewTag: false`, `webSecurity: true`, `allowRunningInsecureContent: false`.
+- Setiap handler IPC memverifikasi bahwa pengirimnya adalah window yang dibuat
+  proses ini **dan** bahwa URL frame-nya berada pada origin yang diizinkan.
+- Setiap payload melewati parser: namespace/kunci penyimpanan menolak traversal
+  dan karakter kontrol, nilai dibatasi 1 MiB, URL eksternal dibatasi
+  `http:`/`https:`/`mailto:`, URL server dibatasi `http:`/`https:`.
+- Permission handler menolak semua permintaan secara default; `will-attach-webview`
+  diblokir; CSP melarang `frame-src`, `object-src`, `base-uri`, `form-action`.
+- Log meredaksi `auth_token`, `api_key`, `password`, `Bearer …`, dan kunci `sk-…`.
+
+**Verifikasi (perintah dan hasil)**
+
+| Perintah | Hasil |
+| --- | --- |
+| `cd packages/desktop && bun test src` | **44 pass / 0 fail** (6 berkas) |
+| `cd packages/desktop && bun run typecheck` | bersih |
+| `cd packages/desktop && bun run script/build.ts` | berhasil: `dist/main/index.cjs`, `dist/preload/index.cjs`, `dist/renderer/*` |
+| Vite dev server renderer pada `127.0.0.1:4455` | melayani HTML + mentransformasi `entry.tsx` |
+| `bunx oxlint packages/desktop` | 0 warning / 0 error |
+| `bunx prettier --check` | lulus |
+| `cd packages/app && bun run build` + `test:unit` | tetap hijau (mode web tidak rusak) |
+
+Cakupan tes: validasi kontrak IPC, kebijakan loopback/navigasi, redaksi log,
+penyimpanan, pembangunan menu, dan smoke test proses main (modul `electron`
+di-mock) yang menegaskan preferensi keamanan window serta penolakan IPC dari
+frame asing.
+
+**Belum terverifikasi / terblokir**
+
+- **Tidak ada jendela Electron yang pernah dibuka.** Binary Electron tidak dapat
+  diunduh di sandbox (`github.com` release assets memutus TLS) dan tidak ada
+  display. Dialog folder native, menu, notifikasi, dan penyimpanan hanya teruji
+  melalui mock.
+- **Tidak ada installer.** `electron-builder.yml` belum pernah dijalankan; belum
+  ada artefak Windows, belum ada code signing, dan **tidak ada klaim siap rilis**.
+- **Backend belum otomatis** (Tahap 1B). Saat ini backend harus dijalankan manual
+  di `127.0.0.1:4096`, sehingga janji "tanpa menjalankan server manual" belum
+  terpenuhi.
+
+**Langkah berikutnya**
+
+1. Tahap 1B: bundel/supervisi backend — pemilihan port, health check, batas waktu
+   startup, UI loading/error, dan penghentian proses anak saat keluar.
+2. Jalankan `bun run dev` di mesin Windows/Linux berdisplay untuk memvalidasi
+   jendela, dialog folder, menu, dan penyimpanan secara nyata.
+3. Setelah 1B stabil, jalankan `electron-builder` untuk installer Windows x64 dan
+   uji install/launch/uninstall pada Windows bersih (Tahap 1D).
 
 ---
 

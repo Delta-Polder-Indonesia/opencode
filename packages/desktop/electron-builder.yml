@@ -1,0 +1,26 @@
+appId: ai.opencode.desktop
+productName: OpenCode
+copyright: OpenCode contributors
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - package.json
+# Stage 1A packages only the Electron shell and the renderer bundle.
+# The bundled backend binary is wired up in stage 1B and is NOT included here,
+# so an installer produced from this config is not yet a complete product.
+asar: true
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${productName}-${version}-win-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: OpenCode
