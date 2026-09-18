@@ -1,7 +1,7 @@
 export * as JobTool from "./job"
 
 import { eq } from "drizzle-orm"
-import { Effect, Layer, Schema, Scope } from "effect"
+import { Effect, Fiber, Layer, Schema, Scope } from "effect"
 import { BackgroundJob } from "../background-job"
 import { BackgroundJobStore } from "../background-job/store"
 import { Database } from "../database/database"
@@ -102,10 +102,7 @@ type NoteTarget = {
  * delivered: the cancelling actor already knows. Returns whether a note was
  * admitted.
  */
-const admitNote = Effect.fn("JobTool.admitNote")(function* (
-  target: NoteTarget,
-  delivery: SessionInput.Delivery,
-) {
+const admitNote = Effect.fn("JobTool.admitNote")(function* (target: NoteTarget, delivery: SessionInput.Delivery) {
   if (target.info.status === "cancelled" || target.info.status === "running") return false
   yield* SessionInput.admit(target.db, target.events, {
     id: SessionMessage.ID.create(),
@@ -163,32 +160,61 @@ export const launch = Effect.fn("JobTool.launch")(function* (input: LaunchInput)
     } satisfies OwnerMetadata,
     run: input.run,
   })
-  yield* BackgroundJobStore.insert(input.db, info).pipe(
+  const lease = yield* BackgroundJobStore.insert(input.db, info).pipe(
     Effect.catchCause((cause) =>
-      Effect.logWarning("Failed to persist background job launch", cause).pipe(Effect.annotateLogs({ jobID: info.id })),
+      Effect.logWarning("Failed to persist background job launch", cause).pipe(
+        Effect.annotateLogs({ jobID: info.id }),
+        Effect.as(undefined),
+      ),
     ),
   )
-  yield* input.jobs.wait({ id: info.id }).pipe(
-    Effect.flatMap((result) =>
-      result.info === undefined
-        ? Effect.void
-        : BackgroundJobStore.settle(input.db, result.info).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Failed to persist background job settlement", cause).pipe(
-                Effect.annotateLogs({ jobID: info.id }),
+  yield* Effect.gen(function* () {
+    // A live owner renews the durable lease independently of the completion
+    // wait. If another runtime fences this row, or records a remote cancel,
+    // stop the local registry job before it can settle or deliver stale work.
+    const heartbeat = lease
+      ? yield* Effect.gen(function* () {
+          while (true) {
+            yield* Effect.sleep(BackgroundJobStore.HEARTBEAT_INTERVAL_MS)
+            const result = yield* BackgroundJobStore.heartbeat(input.db, info.id, lease).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Failed to heartbeat background job", cause).pipe(
+                  Effect.annotateLogs({ jobID: info.id }),
+                  Effect.as({ renewed: true, cancelRequested: false } as const),
+                ),
               ),
-            ),
-            Effect.andThen(
-              deliverSettled({
-                db: input.db,
-                events: input.events,
-                wake: input.wake,
-                sessionID: input.sessionID,
-                info: result.info,
-              }),
-            ),
-          ),
-    ),
+            )
+            if (!result.renewed || result.cancelRequested) {
+              yield* input.jobs.cancel(info.id)
+              return
+            }
+          }
+        }).pipe(Effect.forkIn(input.scope))
+      : undefined
+    const result = yield* input.jobs.wait({ id: info.id })
+    if (heartbeat) yield* Fiber.interrupt(heartbeat)
+    if (result.info === undefined || lease === undefined) return
+
+    const persisted = yield* BackgroundJobStore.settle(input.db, result.info, lease).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Failed to persist background job settlement", cause).pipe(
+          Effect.annotateLogs({ jobID: info.id }),
+          // Durability is best-effort. A transient database failure should not
+          // hide a live completion; a guarded false result is different and
+          // means another owner already fenced this process.
+          Effect.as(true),
+        ),
+      ),
+    )
+    if (!persisted) return
+    yield* deliverSettled({
+      db: input.db,
+      events: input.events,
+      wake: input.wake,
+      sessionID: input.sessionID,
+      info: result.info,
+    })
+  }).pipe(
     Effect.catch(() => Effect.void),
     Effect.catchDefect(() => Effect.void),
     Effect.forkIn(input.scope),

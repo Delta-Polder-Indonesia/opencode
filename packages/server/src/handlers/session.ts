@@ -1,4 +1,6 @@
 import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionRecoveryStore } from "@opencode-ai/core/session/recovery/store"
+import { Database } from "@opencode-ai/core/database/database"
 import { DateTime, Effect, Stream } from "effect"
 import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
 import { Api } from "../api"
@@ -9,6 +11,10 @@ import {
   MessageNotFoundError,
   ServiceUnavailableError,
   SessionNotFoundError,
+  RecoveryAttemptNotFoundError,
+  RecoveryAttemptNotRetryableError,
+  RecoveryConfirmationRequiredError,
+  RecoveryRetryBudgetExhaustedError,
   UnknownError,
 } from "@opencode-ai/protocol/errors"
 import { AbsolutePath } from "@opencode-ai/core/schema"
@@ -19,6 +25,27 @@ const DefaultSessionHistoryLimit = 50
 export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handlers) =>
   Effect.gen(function* () {
     const session = yield* SessionV2.Service
+    const database = yield* Database.Service
+
+    const missingSession = (sessionID: string) =>
+      new SessionNotFoundError({ sessionID, message: `Session not found: ${sessionID}` })
+    const missingAttempt = (attemptID: string) =>
+      new RecoveryAttemptNotFoundError({ attemptID, message: `Recovery attempt not found: ${attemptID}` })
+    const recoveryOutput = (attempt: SessionRecoveryStore.Info) => ({
+      id: attempt.id,
+      session_id: attempt.sessionID,
+      runtime_id: attempt.runtimeID,
+      fence: attempt.fence,
+      step: attempt.step,
+      status: attempt.status,
+      ...(attempt.recovery === undefined ? {} : { recovery: attempt.recovery }),
+      retry_count: attempt.retryCount,
+      prepared_at: attempt.preparedAt,
+      ...(attempt.dispatchedAt === undefined ? {} : { dispatched_at: attempt.dispatchedAt }),
+      ...(attempt.completedAt === undefined ? {} : { completed_at: attempt.completedAt }),
+      ...(attempt.nextRetryAt === undefined ? {} : { next_retry_at: attempt.nextRetryAt }),
+      ...(attempt.error === undefined ? {} : { error: attempt.error }),
+    })
 
     return handlers
       .handle(
@@ -85,6 +112,72 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
               Array.from(yield* session.active, (sessionID) => [sessionID, { type: "running" as const }]),
             ),
           }
+        }),
+      )
+      .handle(
+        "session.recovery.list",
+        Effect.fn(function* (ctx) {
+          yield* session
+            .get(ctx.params.sessionID)
+            .pipe(Effect.catchTag("Session.NotFoundError", () => Effect.fail(missingSession(ctx.params.sessionID))))
+          return {
+            data: (yield* SessionRecoveryStore.list(database.db, ctx.params.sessionID)).map(recoveryOutput),
+          }
+        }),
+      )
+      .handle(
+        "session.recovery.retry",
+        Effect.fn(function* (ctx) {
+          yield* session
+            .get(ctx.params.sessionID)
+            .pipe(Effect.catchTag("Session.NotFoundError", () => Effect.fail(missingSession(ctx.params.sessionID))))
+          const current = (yield* SessionRecoveryStore.list(database.db, ctx.params.sessionID)).find(
+            (attempt) => attempt.id === ctx.params.attemptID,
+          )
+          if (!current) return yield* Effect.fail(missingAttempt(ctx.params.attemptID))
+          const result = yield* SessionRecoveryStore.retry(
+            database.db,
+            ctx.params.attemptID,
+            ctx.payload.confirmAmbiguous,
+          )
+          if (result._tag === "ConfirmationRequired")
+            return yield* Effect.fail(
+              new RecoveryConfirmationRequiredError({
+                attemptID: ctx.params.attemptID,
+                message: "Retrying an ambiguous provider dispatch requires confirmAmbiguous=true.",
+              }),
+            )
+          if (result._tag === "NotRetryable")
+            return yield* Effect.fail(
+              new RecoveryAttemptNotRetryableError({
+                attemptID: ctx.params.attemptID,
+                message: `Recovery attempt ${ctx.params.attemptID} is not retryable in its current state.`,
+              }),
+            )
+          if (result._tag === "BudgetExhausted")
+            return yield* Effect.fail(
+              new RecoveryRetryBudgetExhaustedError({
+                attemptID: ctx.params.attemptID,
+                message: `Recovery retry budget exhausted for ${ctx.params.attemptID}.`,
+              }),
+            )
+          if (result._tag !== "Retried") return yield* Effect.fail(missingAttempt(ctx.params.attemptID))
+          return { data: recoveryOutput(result.attempt) }
+        }),
+      )
+      .handle(
+        "session.recovery.abandon",
+        Effect.fn(function* (ctx) {
+          yield* session
+            .get(ctx.params.sessionID)
+            .pipe(Effect.catchTag("Session.NotFoundError", () => Effect.fail(missingSession(ctx.params.sessionID))))
+          const current = (yield* SessionRecoveryStore.list(database.db, ctx.params.sessionID)).find(
+            (attempt) => attempt.id === ctx.params.attemptID,
+          )
+          if (!current) return yield* Effect.fail(missingAttempt(ctx.params.attemptID))
+          const abandoned = yield* SessionRecoveryStore.abandon(database.db, ctx.params.attemptID)
+          if (!abandoned) return yield* Effect.fail(missingAttempt(ctx.params.attemptID))
+          return { data: recoveryOutput(abandoned) }
         }),
       )
       .handle(

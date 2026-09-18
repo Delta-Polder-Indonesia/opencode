@@ -1,4 +1,8 @@
-# Test Suite Speed
+# Test Suite Speed — benchmark log
+
+The normative test-suite performance contract is `specs/perf/test-suite.md`.
+This file keeps measured baselines, hypothesis results, and discarded
+experiments rather than repeating the contract.
 
 ## Goal
 
@@ -113,6 +117,30 @@ Initial slowest files observed during discovery:
 
 This table is historical profiling input, not the current ranking after kept changes.
 
+Final scoped profile (`TEST_PROFILE_GLOB='test/server/**/*.test.ts' TEST_PROFILE_TOP=15 bun run profile:test`, one sequential pass, 49 files):
+
+| File                                            | Seconds |
+| ----------------------------------------------- | ------: |
+| `test/server/httpapi-session.test.ts`           |  12.944 |
+| `test/server/httpapi-sdk.test.ts`               |  11.739 |
+| `test/server/httpapi-listen.test.ts`            |  10.788 |
+| `test/server/httpapi-v2-pty.test.ts`            |   8.151 |
+| `test/server/httpapi-pty.test.ts`               |   7.201 |
+| `test/server/httpapi-instance.test.ts`          |   6.691 |
+| `test/server/session-messages.test.ts`          |   6.523 |
+| `test/server/httpapi-workspace.test.ts`         |   6.449 |
+| `test/server/httpapi-provider.test.ts`          |   6.359 |
+| `test/server/httpapi-instance-context.test.ts`  |   6.275 |
+| `test/server/httpapi-schema-error-body.test.ts` |   4.840 |
+| `test/server/httpapi-experimental.test.ts`      |   4.684 |
+| `test/server/httpapi-cors.test.ts`              |   4.265 |
+| `test/server/worktree-endpoint-repro.test.ts`   |   4.075 |
+| `test/server/httpapi-event.test.ts`             |   3.865 |
+
+Profile metrics: `METRIC slowest_test_file_seconds=12.944`,
+`METRIC profiled_test_files=49`. This is a current scoped ranking, not a
+claim that all server files are independently stable benchmarks.
+
 Targeted 3-run baselines:
 
 | File                                      | Runs                   | Median | Notes                                                                        |
@@ -127,12 +155,24 @@ Targeted 3-run baselines:
 
 Full-suite sanity checks:
 
-| Command              |   Result | Notes                                                                                                                                           |
-| -------------------- | -------: | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bun run bench:test` | 225.069s | Before continuing prompt/session work.                                                                                                          |
-| `bun run bench:test` | 186.729s | After prompt, processor, and PTY wins before safety review restores.                                                                            |
-| `bun run bench:test` | 202.317s | After restoring prompt shell coverage and SDK VCS parity coverage.                                                                              |
-| `bun run bench:test` |   failed | Watcher blocker cleared; current run later failed in focused-passing `tool/skill.test.ts` and prompt shell timeout cases under full-suite load. |
+| Command              |   Result | Notes                                                                                                                                                       |
+| -------------------- | -------: | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bun run bench:test` | 225.069s | Before continuing prompt/session work.                                                                                                                      |
+| `bun run bench:test` | 186.729s | After prompt, processor, and PTY wins before safety review restores.                                                                                        |
+| `bun run bench:test` | 202.317s | After restoring prompt shell coverage and SDK VCS parity coverage.                                                                                          |
+| `bun run bench:test` | 287.611s | Current V2 slice before final test cleanup: 3270 pass, 14 skip, 1 todo, 2 unrelated failures (`httpapi-listen` default `/status`, CLI help snapshot).       |
+| `bun run bench:test` | 304.404s | Accepted final sanity run on HEAD `2e1f9e8` with dirty working tree: 3272 pass, 14 skip, 1 todo, 0 fail, 8617 expect() calls; one measured run, no warmups. |
+| `bun run bench:test` |   failed | Watcher blocker cleared; current run later failed in focused-passing `tool/skill.test.ts` and prompt shell timeout cases under full-suite load.             |
+
+HTTP API final gates:
+
+| Command                                                                               |           Result | Notes                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------- | ---------------: | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bun run script/httpapi-exercise.ts --mode coverage --fail-on-missing --fail-on-skip` |         220 pass | `missing=0`, `extra=0`, `skip=0`; route inventory only.                                                                                                                                                                                                                                                                          |
+| `bun run script/httpapi-exercise.ts --mode auth --fail-on-missing --fail-on-skip`     |         220 pass | `missing=0`, `extra=0`, `skip=0`; protected/public authorization probes.                                                                                                                                                                                                                                                         |
+| `bun run script/httpapi-exercise.ts --mode effect --fail-on-missing --fail-on-skip`   | 212 pass, 8 fail | Opt-in effect run; the eight failures are pre-existing provider/model-backed or legacy session/config diagnostics (`config.providers`, `provider.list`, `v2.session.permission.create`, `session.init`, `session.prompt`, `session.prompt_async`, `session.command`, `session.summarize`). Coverage and auth gates remain green. |
+| Same effect command, diagnostic rerun                                                 |  timeout at 180s | No buffered scenario output was emitted before the command timeout; not used as acceptance evidence. Follow-up targeted runs reproduced the provider/config and session diagnostics above.                                                                                                                                       |
+| Same effect command with `--progress` (retry)                                         | 212 pass, 8 fail | Completed in 248.772s and reproduced the same eight failures; `session.prompt_async` reached its 30s scenario timeout. `missing=0`, `extra=0`, `skip=0`; still diagnostic-only.                                                                                                                                                  |
 
 ## Dead Ends
 

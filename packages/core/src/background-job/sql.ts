@@ -26,8 +26,17 @@ export const BackgroundJobTable = sqliteTable(
     output: text(),
     error: text(),
     metadata: text({ mode: "json" }).$type<Record<string, unknown>>(),
+    /** Monotonic per-row fencing token. A stale owner may never settle a row. */
+    fence: integer().notNull().default(1),
+    /** Lease/heartbeat fields are nullable for rows written before fencing landed. */
+    lease_until: integer(),
+    heartbeat_at: integer(),
+    cancel_requested_at: integer(),
   },
-  (table) => [index("background_job_session_status_idx").on(table.session_id, table.status)],
+  (table) => [
+    index("background_job_session_status_idx").on(table.session_id, table.status),
+    index("background_job_runtime_lease_idx").on(table.runtime_id, table.status, table.lease_until),
+  ],
 )
 
 /**

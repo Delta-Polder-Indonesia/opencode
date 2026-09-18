@@ -3,9 +3,10 @@
 Catatan kerja fork `Delta-Polder-Indonesia/opencode`. Sesi berjalan:
 `arena/01a0b0bc-opencode` (item 1–3, PR #3), `arena/01a0b171-opencode`
 (item 4a/gate 1, PR #4), `arena/01a0b189-opencode` (item 4a-lanjut/gate 3),
-`arena/01a0b19d-opencode` (gate 3 lanjutan: auto-resume inbox),
-lalu `arena/01a0b1cd-opencode` (stale-owner fencing).
-Ditulis ulang 2026-09-18 setelah slice fencing selesai.
+lalu `arena/01a0b19d-opencode` (gate 3 lanjutan: auto-resume inbox),
+`arena/01a0b1cd-opencode` (stale-owner fencing), dan sekarang
+`arena/01a0b1b6-opencode` (item 4 final review).
+Ditulis ulang 2026-09-18 setelah slice item 4 selesai.
 Rencana induk: 5 perbaikan prioritas yang disepakati user (lihat
 `specs/v2/todo.md` dan dokumen per-fase di `specs/v2/`).
 
@@ -43,18 +44,19 @@ Rencana induk: 5 perbaikan prioritas yang disepakati user (lihat
    `experimental` melihat semua job instance); owner-hiding tetap
    **hanya model-facing** (`job_*` tools) karena seluruh surface V2 sudah
    membeberkan isi sesi ke konsumen terautentikasi — duplikasi di HTTP
-   hanya konsistensi-palsu. Permukaannya read-only:
+   hanya konsistensi-palsu. Permukaannya semula read-only:
    - `GET /api/job` (`v2.job.list`; query `sessionID`/`status`/`limit`,
      default 50) dan `GET /api/job/:jobID` (`v2.job.get`, 404
      `JobNotFoundError`) — group baru `server.job` di `packages/protocol`
      (`groups/background-job.ts`), handler `packages/server/src/handlers/
-background-job.ts` yang hanya butuh `Database.Service`.
+background-job.ts` yang hanya butuh `Database.Service`. Item 4 kemudian
+     menambahkan `POST /api/job/:jobID/cancel` yang lease-fenced.
    - Sumber kebenaran = **baris durabel saja**; registry process-local
      sengaja tidak dikonsultasi (registry itu per-Location; baris maknanya
      sama dari proses mana pun, lintas restart). Konsekuensinya
      terdokumentasi: job yang persist-nya gagal tak terlihat remote;
      settle yang belum ter-persist sempat terbaca `running`; output selalu
-     tail 16KB. Mutasi (cancel via API) sengaja ditunda sampai fencing.
+     tail 16KB.
    - Store: `BackgroundJobStore.list(db, {sessionID?, status?, limit?})`
      newest-first (`started_at` desc, `id` desc); `fromRow` kini membawa
      `session_id` (field opsional baru di `BackgroundJob.Info` — jalur
@@ -83,61 +85,67 @@ background-job.ts` yang hanya butuh `Database.Service`.
    attempt yang ambigu. Dok: `specs/v2/background-jobs.md` +
    `specs/v2/session.md` + entri done di `specs/v2/todo.md`.
 
-7. **Stale-owner fencing / clustered execution** — branch
-   `arena/01a0b1cd-opencode`. Tabel lease `runtime_fence` (migrasi
-   `20260918000000_runtime_fence`) melacak liveness proses via heartbeat
-   periodik (interval 10 detik, TTL 30 detik). Service `RuntimeFence`
-   (global node, depends on `Database`) mengklaim baris fence secara atomik
-   saat boot; fiber heartbeat memperbarui baris setiap 10 detik; finalizer
-   melepaskan baris saat shutdown bersih; crash membiarkan baris kedaluwarsa
-   secara natural. Recovery `JobTool` kini hanya mengklaim baris `running`
-   milik runtime yang fence-nya sudah kedaluwarsa ATAU tidak punya baris
-   fence sama sekali (pra-migrasi / shutdown bersih). `JobTool.node`
-   depends on `RuntimeFence.node` sehingga fence selalu diklaim sebelum
-   recovery berjalan. Verifikasi: core 1140/1140 (baseline 1128 + 12 tes
-   fence), typecheck core bersih, httpapi-exercise 214/214 + auth 214/214.
-   Dok: `specs/v2/background-jobs.md` (section "Stale-owner fencing") +
-   `specs/v2/todo.md` (entri done). HTTP mutation (cancel via API) kini
-   tidak diblokir oleh fencing.
+7. **Stale-owner fencing / clustered execution** — diwarisi dari branch
+   `arena/01a0b1cd-opencode` dan dipertahankan dalam integrasi final. Tabel
+   `runtime_fence` melacak liveness proses lewat heartbeat global (interval
+   10 detik, TTL 30 detik); service `RuntimeFence` mengklaim dan melepaskan
+   fence saat boot/shutdown. Recovery tetap memakai lease dan fence per job,
+   sehingga `runtime_id` saja tidak pernah menjadi bukti kepemilikan.
+8. **Kecepatan test suite core** — diwarisi dari branch
+   `arena/01a0b1e7-opencode` dan dipertahankan dalam integrasi final. Optimasi
+   test/script menurunkan wall clock sekitar `38.8s` menjadi `~26.5s`
+   (1140 test, 0 gagal); perubahan hanya pada fixture, contention tests, dan
+   migration check paralelisasi. Temuan dan batasannya dicatat di
+   `perf/test-suite.md`.
 
-8. **Kecepatan test suite core** — branch `arena/01a0b1e7-opencode`.
-   Profil + optimasi tanpa spek formal (keputusan user). Wall clock
-   `bun test` di `packages/core`: **38.8s → ~26.5s** (1140 tes, 0 gagal).
-   Temuan: ~22s dari 38s terkonsentrasi di ±15 tes; penyebab utama
-   adalah boot subprocess pada tes flock (16 proses bun × ~570ms di 2 core).
-   Perubahan (semua di sisi tes/script, tanpa perubahan runtime):
-   - `test/fixture/effect-flock-worker.ts`: pakai `LayerNode.compile`
-     langsung, bukan `AppNodeBuilder.build` (yang menarik seluruh graf
-     location-services) → boot worker 570ms → 270ms.
-   - Tes contention flock/effect-flock: 16 → 8 worker; tes `util.flock`
-     memakai `baseDelayMs`/`maxDelayMs` ketat dan `staleMs` lebih kecil
-     di tes yang menguji pemulihan, bukan pacing retry.
-     `effect-flock.test.ts` 9.5s → 3.3s; `flock.test.ts` 5.7s → 2.2s.
-   - `script/migration.ts --check`: dua run drizzle-kit (diff incremental
-     + dump full schema) independen, kini dijalankan paralel → 3.4s → 2.0s.
-   Sisa yang sengaja TIDAK diubah: `WebFetchTool` "conversion throws"
-   (1.4s — butuh stack overflow nyata via turndown, bergantung kedalaman),
-   `ModelsDev` "swallows HTTP errors" (0.7s — backoff nyata `retryTransient`
-   200ms+340ms; butuh jadwal retry injectable untuk dipercepat), tiga tes
-   negatif `Watcher` (masing-masing 500ms `noUpdate`), dan fast-check
-   `Config` v1→v2 (100 run, 0.6s).
+## Status item #4 dan pinggiran
 
-## Yang BELUM selesai (antrian sesi berikutnya, urutan prioritas user)
+4a/4b **selesai di branch ini**. `SessionProviderAttemptTable` membedakan
+`prepared` dari `dispatched`, startup discovery hanya menandai state dan tidak
+memanggil provider, prepared-only loss mendapat satu safe retry setelah
+backoff, ambiguous dispatch tetap `decision_required`, dan retry/abandon
+memerlukan kontrol eksplisit dengan budget terbatas. `SessionExecutionLeaseTable`
+dan heartbeat provider memakai monotonic `fence`; `runtime_id` hanya marker.
+Global `runtime_fence` heartbeat menambah deteksi liveness proses, tetapi tidak
+menggantikan fence per-row. HTTP cancel kini menunggu keputusan lease: live owner mendapat
+`cancel_requested_at`, expired owner difence sebagai `interrupted` dengan
+`stale_owner=true`. Kontrak: `specs/v2/session-recovery.md` dan
+`specs/v2/background-jobs.md`.
 
-4-lanjut. **Sisa item #4** — urutannya:
-a. **Durable continuation recovery** (bagian "Deferred durable
-continuation recovery" di `todo.md`) — auto-resume inbox sudah DONE
-(arena/01a0b19d, lihat #6). Yang tersisa dari slice ini: policy pemulihan
-penuh — provider-attempt preparation vs dispatch ambiguity, keputusan
-eksplisit `retry`/`abandon`, bounded automatic retry, budget/backoff,
-status pemulihan yang terlihat, dan startup discovery.
-b. **Stale-owner fencing / clustered execution** — DONE (lihat #7).
-c. **Kecepatan test suite** — DONE tahap pertama (lihat #8; 38.8s → ~26.5s).
-Kandidat lanjutan bila diperlukan: jadwal retry injectable di `ModelsDev`,
-`noUpdate` watcher lebih pendek. 5. Pinggir lain (bukan prioritas user, tercatat di dokumen fase): adopsi
-cursor di app/desktop sync (menunggu "New Data Mode"); background agent
-dispatch (`job_*` dispatch-ready, tapi tool `task`/sub-agent V2 belum ada
-di core — port dulu dari package app).
+4c **sudah ada dan diverifikasi** di `specs/perf/test-suite.md`, dengan
+riwayat pengukuran di `perf/test-suite.md`: benchmark full-suite satu run,
+profiler per-file sequential, metric output, hypothesis loop, dan dead ends.
+
+Pinggiran (bukan prioritas item #4): adopsi cursor di app/desktop sync
+(menunggu "New Data Mode"); background agent dispatch (`job_*`
+dispatch-ready, tetapi tool `task`/sub-agent V2 belum ada di core — port dulu
+dari package app).
+
+## Verifikasi final item 4 (2026-09-18)
+
+- Targeted core recovery/background-job tests: `21 pass`, `0 fail`, `90 expect()`;
+  scoped typechecks for `protocol`, `core`, `server`, and `sdk/js` pass sequentially.
+- HTTP coverage and auth gates: masing-masing `selected=220`, `pass=220`,
+  `fail=0`, `skip=0`, `missing=0`, `extra=0`.
+- Accepted full benchmark remains the one-run `304.404s` result recorded in
+  `perf/test-suite.md`. The latest scoped server profile (`49` files, sequential) is recorded in
+  `perf/test-suite.md`: slowest `test/server/httpapi-session.test.ts` at
+  `12.944s` (`METRIC slowest_test_file_seconds=12.944`).
+- Effect route execution remains diagnostic-only: accepted completed run
+  `212 pass`, `8 fail`, `0 skip`, `missing=0`, `extra=0`. The eight known
+  diagnostics are `config.providers`, `provider.list`,
+  `v2.session.permission.create`, `session.init`, `session.prompt`,
+  `session.prompt_async`, `session.command`, and `session.summarize`; they
+  require provider/model-backed or legacy route behavior and are not the
+  coverage/auth contract gates. One diagnostic rerun timed out at 180 seconds
+  before buffered output; the requested retry with `--progress` completed in
+  `248.772s` and reproduced the same eight failures (with
+  `session.prompt_async` reaching its 30-second scenario timeout).
+- Repository-wide `bun run lint` still exits on a pre-existing octal-literal
+  error in `packages/session-ui/src/v2/components/prompt-input/index.tsx`;
+  changed-file lint had no errors (only existing warnings).
+- Generated `packages/opencode/config.json` was removed; `openapi.json` and
+  `bun.lock` remain uncommitted per the standing constraints.
 
 ## Batasan sandbox yang HARUS diketahui sesi berikutnya
 
@@ -169,7 +177,7 @@ config.json` sebagai efek samping — hapus, jangan dicommit.
 ```bash
 cd /home/user/opencode
 npm install -g bun 2>/dev/null; NODE_TLS_REJECT_UNAUTHORIZED=0 bun install
-cd packages/core && bun test && bun run typecheck      # ~27s + ~10s
+cd packages/core && bun test && bun run typecheck      # ~35s + ~10s
 cd ../opencode && bun run script/httpapi-exercise.ts --mode coverage \
-  --fail-on-missing --fail-on-skip                     # 214 skenario
+  --fail-on-missing --fail-on-skip                     # 220 skenario
 ```

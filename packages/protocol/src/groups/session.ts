@@ -14,6 +14,10 @@ import {
   MessageNotFoundError,
   ServiceUnavailableError,
   SessionNotFoundError,
+  RecoveryAttemptNotFoundError,
+  RecoveryAttemptNotRetryableError,
+  RecoveryConfirmationRequiredError,
+  RecoveryRetryBudgetExhaustedError,
   UnknownError,
 } from "../errors"
 import { Agent } from "@opencode-ai/schema/agent"
@@ -84,6 +88,22 @@ const SessionActive = Schema.Struct({
   type: Schema.Literal("running"),
 }).annotate({ identifier: "SessionActive" })
 
+export const SessionRecoveryAttempt = Schema.Struct({
+  id: Schema.String,
+  session_id: Session.ID,
+  runtime_id: Schema.String,
+  fence: Schema.Number,
+  step: Schema.Number,
+  status: Schema.Literals(["prepared", "dispatched", "succeeded", "failed", "abandoned"]),
+  recovery: Schema.Literals(["retry_ready", "decision_required", "auto_retrying", "abandoned"]).pipe(Schema.optional),
+  retry_count: Schema.Number,
+  prepared_at: Schema.Number,
+  dispatched_at: Schema.optional(Schema.Number),
+  completed_at: Schema.optional(Schema.Number),
+  next_retry_at: Schema.optional(Schema.Number),
+  error: Schema.optional(Schema.String),
+}).annotate({ identifier: "SessionRecoveryAttempt" })
+
 const SessionHistoryLimit = PositiveInt.check(Schema.isLessThanOrEqualTo(100))
 
 export const SessionHistoryQuery = Schema.Struct({
@@ -153,6 +173,60 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
             "Retrieve foreground Session drains currently owned by this OpenCode process. Sessions absent from the result are inactive.",
         }),
       ),
+    )
+    .add(
+      HttpApiEndpoint.get("session.recovery.list", "/api/session/:sessionID/recovery", {
+        params: { sessionID: Session.ID },
+        success: Schema.Struct({ data: Schema.Array(SessionRecoveryAttempt) }),
+        error: SessionNotFoundError,
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "v2.session.recovery.list",
+            summary: "List continuation recovery attempts",
+            description:
+              "Read durable provider-attempt recovery state. Dispatched attempts with unknown outcomes remain visible and are never retried implicitly.",
+          }),
+        ),
+    )
+    .add(
+      HttpApiEndpoint.post("session.recovery.retry", "/api/session/:sessionID/recovery/:attemptID/retry", {
+        params: { sessionID: Session.ID, attemptID: Schema.String },
+        payload: Schema.Struct({ confirmAmbiguous: Schema.Boolean.pipe(Schema.optional) }),
+        success: Schema.Struct({ data: SessionRecoveryAttempt }),
+        error: [
+          SessionNotFoundError,
+          RecoveryAttemptNotFoundError,
+          RecoveryConfirmationRequiredError,
+          RecoveryAttemptNotRetryableError,
+          RecoveryRetryBudgetExhaustedError,
+        ],
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "v2.session.recovery.retry",
+            summary: "Retry a provider attempt",
+            description:
+              "Explicitly retry a durable recovery attempt. Ambiguous provider dispatch requires confirmAmbiguous=true and consumes a bounded retry budget.",
+          }),
+        ),
+    )
+    .add(
+      HttpApiEndpoint.post("session.recovery.abandon", "/api/session/:sessionID/recovery/:attemptID/abandon", {
+        params: { sessionID: Session.ID, attemptID: Schema.String },
+        success: Schema.Struct({ data: SessionRecoveryAttempt }),
+        error: [SessionNotFoundError, RecoveryAttemptNotFoundError],
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "v2.session.recovery.abandon",
+            summary: "Abandon a provider attempt",
+            description: "Explicitly close an ambiguous provider attempt without dispatching it again.",
+          }),
+        ),
     )
     .add(
       HttpApiEndpoint.get("session.get", "/api/session/:sessionID", {

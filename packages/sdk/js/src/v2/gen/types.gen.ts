@@ -2698,6 +2698,7 @@ export type BackgroundJobInfo = {
   metadata?: {
     [key: string]: unknown
   }
+  cancel_requested_at?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
 }
 
 export type JobNotFoundError = {
@@ -2723,9 +2724,49 @@ export type SessionActive = {
   type: "running"
 }
 
+export type SessionRecoveryAttempt = {
+  id: string
+  session_id: string
+  runtime_id: string
+  fence: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  step: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  status: "prepared" | "dispatched" | "succeeded" | "failed" | "abandoned"
+  recovery?: "retry_ready" | "decision_required" | "auto_retrying" | "abandoned"
+  retry_count: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  prepared_at: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  dispatched_at?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  completed_at?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  next_retry_at?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  error?: string
+}
+
 export type SessionNotFoundError = {
   _tag: "SessionNotFoundError"
   sessionID: string
+  message: string
+}
+
+export type RecoveryAttemptNotFoundError = {
+  _tag: "RecoveryAttemptNotFoundError"
+  attemptID: string
+  message: string
+}
+
+export type RecoveryConfirmationRequiredError = {
+  _tag: "RecoveryConfirmationRequiredError"
+  attemptID: string
+  message: string
+}
+
+export type RecoveryAttemptNotRetryableError = {
+  _tag: "RecoveryAttemptNotRetryableError"
+  attemptID: string
+  message: string
+}
+
+export type RecoveryRetryBudgetExhaustedError = {
+  _tag: "RecoveryRetryBudgetExhaustedError"
+  attemptID: string
   message: string
 }
 
@@ -11425,6 +11466,45 @@ export type V2JobGetResponses = {
 
 export type V2JobGetResponse = V2JobGetResponses[keyof V2JobGetResponses]
 
+export type V2JobCancelData = {
+  body?: never
+  path: {
+    jobID: string
+  }
+  query?: never
+  url: "/api/job/{jobID}/cancel"
+}
+
+export type V2JobCancelErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * JobNotFoundError
+   */
+  404: JobNotFoundError
+}
+
+export type V2JobCancelError = V2JobCancelErrors[keyof V2JobCancelErrors]
+
+export type V2JobCancelResponses = {
+  /**
+   * Success
+   */
+  200: {
+    data: BackgroundJobInfo
+    requested: boolean
+    stale_owner: boolean
+  }
+}
+
+export type V2JobCancelResponse = V2JobCancelResponses[keyof V2JobCancelResponses]
+
 export type V2SessionListData = {
   body?: never
   path?: never
@@ -11534,6 +11614,126 @@ export type V2SessionActiveResponses = {
 }
 
 export type V2SessionActiveResponse = V2SessionActiveResponses[keyof V2SessionActiveResponses]
+
+export type V2SessionRecoveryListData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/recovery"
+}
+
+export type V2SessionRecoveryListErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError
+   */
+  404: SessionNotFoundError
+}
+
+export type V2SessionRecoveryListError = V2SessionRecoveryListErrors[keyof V2SessionRecoveryListErrors]
+
+export type V2SessionRecoveryListResponses = {
+  /**
+   * Success
+   */
+  200: {
+    data: Array<SessionRecoveryAttempt>
+  }
+}
+
+export type V2SessionRecoveryListResponse = V2SessionRecoveryListResponses[keyof V2SessionRecoveryListResponses]
+
+export type V2SessionRecoveryRetryData = {
+  body: {
+    confirmAmbiguous?: boolean
+  }
+  path: {
+    sessionID: string
+    attemptID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/recovery/{attemptID}/retry"
+}
+
+export type V2SessionRecoveryRetryErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError | RecoveryAttemptNotFoundError
+   */
+  404: RecoveryAttemptNotFoundError | SessionNotFoundError
+  /**
+   * RecoveryConfirmationRequiredError | RecoveryAttemptNotRetryableError | RecoveryRetryBudgetExhaustedError
+   */
+  409: RecoveryConfirmationRequiredError | RecoveryAttemptNotRetryableError | RecoveryRetryBudgetExhaustedError
+}
+
+export type V2SessionRecoveryRetryError = V2SessionRecoveryRetryErrors[keyof V2SessionRecoveryRetryErrors]
+
+export type V2SessionRecoveryRetryResponses = {
+  /**
+   * Success
+   */
+  200: {
+    data: SessionRecoveryAttempt
+  }
+}
+
+export type V2SessionRecoveryRetryResponse = V2SessionRecoveryRetryResponses[keyof V2SessionRecoveryRetryResponses]
+
+export type V2SessionRecoveryAbandonData = {
+  body?: never
+  path: {
+    sessionID: string
+    attemptID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/recovery/{attemptID}/abandon"
+}
+
+export type V2SessionRecoveryAbandonErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError | RecoveryAttemptNotFoundError
+   */
+  404: RecoveryAttemptNotFoundError | SessionNotFoundError
+}
+
+export type V2SessionRecoveryAbandonError = V2SessionRecoveryAbandonErrors[keyof V2SessionRecoveryAbandonErrors]
+
+export type V2SessionRecoveryAbandonResponses = {
+  /**
+   * Success
+   */
+  200: {
+    data: SessionRecoveryAttempt
+  }
+}
+
+export type V2SessionRecoveryAbandonResponse =
+  V2SessionRecoveryAbandonResponses[keyof V2SessionRecoveryAbandonResponses]
 
 export type V2SessionGetData = {
   body?: never

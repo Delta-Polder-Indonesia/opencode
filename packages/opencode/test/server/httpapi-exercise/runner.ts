@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -10,7 +11,16 @@ import { MessageID, PartID } from "../../../src/session/schema"
 import { call, callApi, callAuthProbe, disposeApps } from "./backend"
 import { original } from "./environment"
 import { runtime } from "./runtime"
-import type { ActiveScenario, Options, ProjectOptions, Result, Scenario, ScenarioContext, SeededContext } from "./types"
+import type {
+  ActiveScenario,
+  Options,
+  ProjectOptions,
+  RecoverySeed,
+  Result,
+  Scenario,
+  ScenarioContext,
+  SeededContext,
+} from "./types"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 
@@ -197,14 +207,68 @@ function withContext<A, E>(
                       ...(job.output === undefined ? {} : { output: job.output }),
                       ...(job.sessionID === undefined ? {} : { metadata: { sessionID: job.sessionID } }),
                     }
-                    yield* modules.BackgroundJobStore.insert(db, info)
-                    if (job.status === "running") continue
-                    yield* modules.BackgroundJobStore.settle(db, {
-                      ...info,
-                      status: job.status,
-                      completed_at: job.completedAt ?? now + index,
-                      ...(job.error === undefined ? {} : { error: job.error }),
-                    })
+                    const insertedLease = yield* modules.BackgroundJobStore.insert(db, info)
+                    if (
+                      job.runtimeID !== undefined ||
+                      job.fence !== undefined ||
+                      job.heartbeatAt !== undefined ||
+                      job.leaseUntil !== undefined
+                    ) {
+                      yield* db
+                        .update(modules.BackgroundJobTable)
+                        .set({
+                          ...(job.runtimeID === undefined ? {} : { runtime_id: job.runtimeID }),
+                          ...(job.fence === undefined ? {} : { fence: job.fence }),
+                          ...(job.heartbeatAt === undefined ? {} : { heartbeat_at: job.heartbeatAt }),
+                          ...(job.leaseUntil === undefined ? {} : { lease_until: job.leaseUntil }),
+                        })
+                        .where(eq(modules.BackgroundJobTable.id, info.id))
+                        .run()
+                        .pipe(Effect.orDie)
+                    }
+                    if (job.status === "running" || !insertedLease) continue
+                    yield* modules.BackgroundJobStore.settle(
+                      db,
+                      {
+                        ...info,
+                        status: job.status,
+                        completed_at: job.completedAt ?? now + index,
+                        ...(job.error === undefined ? {} : { error: job.error }),
+                      },
+                      {
+                        runtimeID: job.runtimeID ?? insertedLease.runtimeID,
+                        fence: job.fence ?? insertedLease.fence,
+                      },
+                    )
+                  }
+                }),
+              ),
+            ),
+          recovery: (input: RecoverySeed[]) =>
+            run(
+              modules.Database.Service.use(({ db }) =>
+                Effect.gen(function* () {
+                  for (const attempt of input) {
+                    yield* db
+                      .insert(modules.SessionProviderAttemptTable)
+                      .values({
+                        id: attempt.id,
+                        session_id: attempt.sessionID,
+                        runtime_id: attempt.runtimeID ?? "runtime_httpapi_seed",
+                        fence: attempt.fence ?? 1,
+                        step: attempt.step ?? 1,
+                        status: attempt.status,
+                        recovery: attempt.recovery,
+                        retry_count: attempt.retryCount ?? 0,
+                        prepared_at: attempt.preparedAt ?? Date.now(),
+                        dispatched_at: attempt.dispatchedAt,
+                        completed_at: attempt.completedAt,
+                        next_retry_at: attempt.nextRetryAt,
+                        error: attempt.error,
+                        lease_until: attempt.leaseUntil,
+                      })
+                      .run()
+                      .pipe(Effect.orDie)
                   }
                 }),
               ),

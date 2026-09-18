@@ -66,9 +66,7 @@ const setup = Effect.gen(function* () {
 })
 
 /** Clear any fence the RuntimeFence layer claimed at boot. */
-const clearFence = Database.Service.use(({ db }) =>
-  db.delete(RuntimeFenceTable).run().pipe(Effect.orDie),
-)
+const clearFence = Database.Service.use(({ db }) => db.delete(RuntimeFenceTable).run().pipe(Effect.orDie))
 
 const seedFence = (runtimeID: string, heartbeatAt: number) =>
   Database.Service.use(({ db }) =>
@@ -80,12 +78,7 @@ const seedFence = (runtimeID: string, heartbeatAt: number) =>
       .pipe(Effect.orDie),
   )
 
-const seedJob = (input: {
-  id: string
-  runtimeID: string
-  status?: BackgroundJob.Status
-  sessionID?: string
-}) =>
+const seedJob = (input: { id: string; runtimeID: string; status?: BackgroundJob.Status; sessionID?: string }) =>
   Database.Service.use(({ db }) =>
     db
       .insert(BackgroundJobTable)
@@ -105,12 +98,7 @@ const seedJob = (input: {
 
 const fenceRow = (runtimeID: string) =>
   Database.Service.use(({ db }) =>
-    db
-      .select()
-      .from(RuntimeFenceTable)
-      .where(eq(RuntimeFenceTable.runtime_id, runtimeID))
-      .get()
-      .pipe(Effect.orDie),
+    db.select().from(RuntimeFenceTable).where(eq(RuntimeFenceTable.runtime_id, runtimeID)).get().pipe(Effect.orDie),
   )
 
 const jobStatus = (id: string) =>

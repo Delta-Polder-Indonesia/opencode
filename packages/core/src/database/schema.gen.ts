@@ -69,6 +69,10 @@ export default {
           \`output\` text,
           \`error\` text,
           \`metadata\` text,
+          \`fence\` integer DEFAULT 1 NOT NULL,
+          \`lease_until\` integer,
+          \`heartbeat_at\` integer,
+          \`cancel_requested_at\` integer,
           CONSTRAINT \`fk_background_job_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
         );
       `)
@@ -144,6 +148,36 @@ export default {
           \`time_initialized\` integer,
           \`sandboxes\` text NOT NULL,
           \`commands\` text
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`session_execution_lease\` (
+          \`session_id\` text PRIMARY KEY,
+          \`runtime_id\` text NOT NULL,
+          \`fence\` integer DEFAULT 1 NOT NULL,
+          \`heartbeat_at\` integer,
+          \`lease_until\` integer,
+          CONSTRAINT \`fk_session_execution_lease_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`session_provider_attempt\` (
+          \`id\` text PRIMARY KEY,
+          \`session_id\` text NOT NULL,
+          \`runtime_id\` text NOT NULL,
+          \`fence\` integer DEFAULT 1 NOT NULL,
+          \`step\` integer NOT NULL,
+          \`status\` text NOT NULL,
+          \`recovery\` text,
+          \`retry_count\` integer DEFAULT 0 NOT NULL,
+          \`prepared_at\` integer NOT NULL,
+          \`dispatched_at\` integer,
+          \`completed_at\` integer,
+          \`heartbeat_at\` integer,
+          \`lease_until\` integer,
+          \`next_retry_at\` integer,
+          \`error\` text,
+          CONSTRAINT \`fk_session_provider_attempt_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
         );
       `)
       yield* tx.run(`
@@ -261,11 +295,17 @@ export default {
       yield* tx.run(
         `CREATE INDEX \`background_job_session_status_idx\` ON \`background_job\` (\`session_id\`,\`status\`);`,
       )
+      yield* tx.run(
+        `CREATE INDEX \`background_job_runtime_lease_idx\` ON \`background_job\` (\`runtime_id\`,\`status\`,\`lease_until\`);`,
+      )
       yield* tx.run(`CREATE INDEX \`runtime_fence_expires_at_idx\` ON \`runtime_fence\` (\`heartbeat_at\`);`)
       yield* tx.run(`CREATE UNIQUE INDEX \`event_aggregate_seq_idx\` ON \`event\` (\`aggregate_id\`,\`seq\`);`)
       yield* tx.run(`CREATE INDEX \`event_aggregate_type_seq_idx\` ON \`event\` (\`aggregate_id\`,\`type\`,\`seq\`);`)
       yield* tx.run(
         `CREATE UNIQUE INDEX \`permission_project_action_resource_idx\` ON \`permission\` (\`project_id\`,\`action\`,\`resource\`);`,
+      )
+      yield* tx.run(
+        `CREATE INDEX \`session_provider_attempt_session_status_idx\` ON \`session_provider_attempt\` (\`session_id\`,\`status\`);`,
       )
       yield* tx.run(
         `CREATE INDEX \`message_session_time_created_id_idx\` ON \`message\` (\`session_id\`,\`time_created\`,\`id\`);`,

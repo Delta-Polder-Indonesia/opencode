@@ -378,6 +378,9 @@ const seedRow = (input: {
   metadata?: Record<string, unknown>
   error?: string
   startedAt?: number
+  leaseUntil?: number | null
+  heartbeatAt?: number | null
+  fence?: number
 }) =>
   Database.Service.use(({ db }) =>
     db
@@ -392,6 +395,9 @@ const seedRow = (input: {
         started_at: input.startedAt ?? 1,
         metadata: input.metadata ?? null,
         error: input.error ?? null,
+        lease_until: input.leaseUntil,
+        heartbeat_at: input.heartbeatAt,
+        fence: input.fence,
       })
       .run()
       .pipe(Effect.orDie),
@@ -607,6 +613,88 @@ describe("Restart recovery", () => {
         type: "error",
         value: "Unknown job: job_persisted_foreign",
       })
+    }),
+  )
+})
+
+describe("Background job fencing", () => {
+  itDb.effect("does not recover a foreign owner while its lease is alive", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      yield* seedRow({
+        id: "job_live_foreign_owner",
+        status: "running",
+        runtimeID: "runtime_other",
+        sessionID,
+        metadata: ownerMetadata(),
+        leaseUntil: 1_000_000,
+        heartbeatAt: 1,
+        fence: 7,
+      })
+
+      expect(yield* BackgroundJobStore.recover(db)).toEqual([])
+      expect((yield* jobRow("job_live_foreign_owner"))?.status).toBe("running")
+    }),
+  )
+
+  itDb.effect("fences an expired owner before accepting an HTTP-style cancel", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      yield* seedRow({
+        id: "job_stale_owner",
+        status: "running",
+        runtimeID: "runtime_dead",
+        sessionID,
+        metadata: ownerMetadata(),
+        leaseUntil: 0,
+        heartbeatAt: 0,
+        fence: 3,
+      })
+
+      const result = yield* BackgroundJobStore.requestCancel(db, "job_stale_owner")
+      expect(result._tag).toBe("StaleOwner")
+      expect(result._tag === "StaleOwner" ? result.info.status : undefined).toBe("interrupted")
+
+      const staleSettle = yield* BackgroundJobStore.settle(
+        db,
+        {
+          id: "job_stale_owner",
+          type: "bash",
+          status: "completed",
+          started_at: 0,
+        },
+        { runtimeID: "runtime_dead", fence: 3 },
+      )
+      expect(staleSettle).toBe(false)
+      expect((yield* jobRow("job_stale_owner"))?.status).toBe("interrupted")
+    }),
+  )
+
+  itDb.effect("records a live remote cancel for the owner heartbeat to acknowledge", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      yield* seedRow({
+        id: "job_cancel_request",
+        status: "running",
+        runtimeID: BackgroundJobStore.runtimeID(),
+        sessionID,
+        metadata: ownerMetadata(),
+        leaseUntil: 1_000_000,
+        heartbeatAt: 1,
+        fence: 5,
+      })
+
+      const result = yield* BackgroundJobStore.requestCancel(db, "job_cancel_request")
+      expect(result._tag).toBe("Requested")
+      const heartbeat = yield* BackgroundJobStore.heartbeat(db, "job_cancel_request", {
+        runtimeID: BackgroundJobStore.runtimeID(),
+        fence: 5,
+      })
+      expect(heartbeat).toMatchObject({ renewed: true, cancelRequested: true })
+      expect((yield* jobRow("job_cancel_request"))?.status).toBe("running")
     }),
   )
 })

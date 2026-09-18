@@ -118,3 +118,39 @@ export class JobNotFoundError extends Schema.TaggedErrorClass<JobNotFoundError>(
   },
   { httpApiStatus: 404 },
 ) {}
+
+export class RecoveryAttemptNotFoundError extends Schema.TaggedErrorClass<RecoveryAttemptNotFoundError>()(
+  "RecoveryAttemptNotFoundError",
+  {
+    attemptID: Schema.String,
+    message: Schema.String,
+  },
+  { httpApiStatus: 404 },
+) {}
+
+export class RecoveryConfirmationRequiredError extends Schema.TaggedErrorClass<RecoveryConfirmationRequiredError>()(
+  "RecoveryConfirmationRequiredError",
+  {
+    attemptID: Schema.String,
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {}
+
+export class RecoveryAttemptNotRetryableError extends Schema.TaggedErrorClass<RecoveryAttemptNotRetryableError>()(
+  "RecoveryAttemptNotRetryableError",
+  {
+    attemptID: Schema.String,
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {}
+
+export class RecoveryRetryBudgetExhaustedError extends Schema.TaggedErrorClass<RecoveryRetryBudgetExhaustedError>()(
+  "RecoveryRetryBudgetExhaustedError",
+  {
+    attemptID: Schema.String,
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {}

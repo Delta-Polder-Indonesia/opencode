@@ -1,5 +1,44 @@
 # V2 Schema Changelog
 
+## 2026-09-17: Fence Provider Recovery And Background Job Mutation
+
+Affected schema:
+
+- New `session_provider_attempt` rows record provider request preparation,
+  dispatch ambiguity, retry budget/backoff, heartbeat leases, and monotonic
+  fences. New `session_execution_lease` rows fence one Session drain across
+  runtimes.
+- `background_job` gains `fence`, `heartbeat_at`, `lease_until`, and
+  `cancel_requested_at`; old rows remain observable and are eligible for
+  lease-aware recovery.
+- V2 adds `GET /api/session/:sessionID/recovery`, explicit retry and abandon
+  mutations, and `POST /api/job/:jobID/cancel`. Generated SDK operations and
+  types are regenerated from these contracts.
+
+Change:
+
+- Mark provider attempts `prepared` before dispatch and `dispatched` only at
+  the external-call boundary. Startup discovery retries only preparation loss
+  within one bounded automatic budget; ambiguous dispatch remains visible and
+  confirmation-gated.
+- Require runtime, fence, status, and live lease checks for settlement,
+  heartbeat, recovery claims, Session execution, and remote cancellation.
+  `runtime_id` remains an audit marker, not a fence.
+- Keep live completion wakes advisory; recovery uses queued input without a
+  wake, and HTTP job cancellation reports a request or stale-owner fence
+  instead of claiming remote work already stopped.
+
+Compatibility:
+
+- New tables are created by forward migrations and cascade with their owning
+  Session. Existing V2 prompt/history rows remain valid; no durable transcript
+  identity is introduced for a process-local drain.
+- Durable background rows retain their prior status/output contract. New
+  nullable lease/request columns are absent on old rows, so an old running row
+  is treated as lease-expired and recovered conservatively.
+- Consumers that only observe existing job/session routes are unaffected;
+  generated SDK clients gain the new operations and wire fields.
+
 ## 2026-06-26: Add Finite Session History
 
 - Add `GET /api/session/:sessionID/history` and generated Promise, Effect, and legacy JavaScript client methods.
