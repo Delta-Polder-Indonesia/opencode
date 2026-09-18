@@ -291,6 +291,29 @@ password) sudah terverifikasi cocok, dengan satu detail tak terdokumentasi:
 mDNS hanya memaksa hostname `0.0.0.0` kalau `server.hostname` di config
 tidak diisi.
 
+## Status PR #12 (2026-09-18)
+
+PR `#12` **sudah di-merge** ke `main` sebagai merge commit `db2b760efb`
+(17 commit baru: 16 commit branch + merge commit). `main` sebelum merge:
+`9521ccf0e4` — dan `main` TIDAK tersentuh oleh penulisan ulang riwayat
+(merge-base tetap `9521ccf0e4`).
+
+Isi yang kini ada di `main`: `script/dev-safe.ps1`, `script/dev-safe.cmd`,
+`script/dev-safe.tests.ps1`, `.github/workflows/dev-safe-windows.yml`, README
+yang dirapikan, dan `catatan.md` ini. Riwayat `main` bersih dari IP LAN contoh
+(`git log --all -S '<IP>'` kosong).
+
+Catatan praktis untuk sesi berikutnya:
+
+- Job CI `dev-safe (Windows)` akan berjalan otomatis pada PR yang menyentuh
+  `script/dev-safe.*` atau workflow itu. Daftar `paths` sengaja dipersempit
+  supaya tidak membakar menit Actions di PR dokumentasi.
+- Branch `arena/01a0b41d-opencode` tetap ada setelah merge (repo tidak
+  menghapus branch otomatis) dan sekarang berisi satu commit dokumentasi di
+  atas `main` yang sudah di-merge.
+- Repo kini publik: Dependabot alerts masih mati; aktifkan di
+  Settings → Code security bersama secret protection/push protection.
+
 ## Batasan sandbox yang HARUS diketahui sesi berikutnya
 
 - **RAM ~3.9GB, tanpa swap.** `bun run typecheck` di `packages/opencode`
