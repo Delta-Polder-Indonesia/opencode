@@ -12,9 +12,17 @@ Ditulis ulang 2026-09-18 setelah slice item 4 selesai.
 Hasil audit `arena/01a0b221-opencode` (2026-09-18): seluruh 8 item di bawah
 terverifikasi ADA dan gate-nya dijalankan ulang di HEAD `9c3ad825c` —
 core `1148 pass / 0 fail`, typecheck `core`+`protocol`+`server`+`sdk/js` bersih,
-harness coverage `220/220`, harness effect `212 pass / 8 fail` dengan 8 nama
-identik dengan daftar di bawah. Satu klaim dokumentasi keliru dan sudah
-diperbaiki: item 8 menunjuk file perf yang salah (lihat koreksi di item 8).
+harness coverage `220/220`, harness effect `212 pass / 8 fail` tanpa katalog
+model dan **`220/220`** dengan `OPENCODE_MODELS_PATH`.
+
+Dua klaim dokumentasi ternyata keliru dan sudah diperbaiki:
+
+- **Item 8** menunjuk file perf yang salah (lihat koreksi di item 8).
+- **8 kegagalan mode `effect`** bukan "butuh provider/model eksternal" dan bukan
+  kondisi yang tak terhindarkan. Penyebab tunggalnya: sandbox tidak bisa
+  menjangkau `https://models.opencode.ai`. Sediakan katalog lokal dan
+  semuanya lolos — lihat koreksi di "Verifikasi final item 4" dan di bagian
+  batasan sandbox.
 
 Rencana induk: 5 perbaikan prioritas yang disepakati user (lihat
 `specs/v2/todo.md` dan dokumen per-fase di `specs/v2/`).
@@ -151,16 +159,34 @@ dari package app).
   `perf/test-suite.md`. The latest scoped server profile (`49` files, sequential) is recorded in
   `perf/test-suite.md`: slowest `test/server/httpapi-session.test.ts` at
   `12.944s` (`METRIC slowest_test_file_seconds=12.944`).
-- Effect route execution remains diagnostic-only: accepted completed run
-  `212 pass`, `8 fail`, `0 skip`, `missing=0`, `extra=0`. The eight known
-  diagnostics are `config.providers`, `provider.list`,
-  `v2.session.permission.create`, `session.init`, `session.prompt`,
-  `session.prompt_async`, `session.command`, and `session.summarize`; they
-  require provider/model-backed or legacy route behavior and are not the
-  coverage/auth contract gates. One diagnostic rerun timed out at 180 seconds
-  before buffered output; the requested retry with `--progress` completed in
-  `248.772s` and reproduced the same eight failures (with
-  `session.prompt_async` reaching its 30-second scenario timeout).
+- Effect route execution: without a reachable models catalog the run is
+  `212 pass`, `8 fail`, `0 skip`, `missing=0`, `extra=0`. The eight failures are
+  `config.providers`, `provider.list`, `v2.session.permission.create`,
+  `session.init`, `session.prompt`, `session.prompt_async`, `session.command`,
+  and `session.summarize`.
+  **Koreksi (audit 2026-09-18):** entri ini semula menyebut kedelapannya
+  "require provider/model-backed or legacy route behavior". Itu salah. Penyebab
+  tunggalnya adalah sandbox tidak bisa menjangkau
+  `https://models.opencode.ai/api.json`. Enam di antaranya 500 dengan
+  `HttpClientError: Transport error (GET https://models.opencode.ai/api.json)`
+  (dibuktikan dengan membocorkan `Cause.pretty` lewat middleware error sementara);
+  `session.prompt_async` menggantung >150 detik pada dependensi yang sama; dan
+  `v2.session.permission.create` menjawab `effect: "deny"` karena resolusi agent
+  gagal tanpa katalog, sehingga jatuh ke `missingAgentPermissions`
+  (`packages/core/src/permission.ts:144`).
+  Dengan katalog lokal, **kedelapannya lolos**:
+
+  ```sh
+  cd packages/opencode
+  OPENCODE_MODELS_PATH=test/tool/fixtures/models-api.json \
+    bun run script/httpapi-exercise.ts --mode effect
+  # summary pass=220 fail=0 skip=0 missing=0 extra=0  (147s)
+  ```
+
+  Fixture itu snapshot `api.json` asli (4.9MB, 159 provider) yang sudah ada di
+  tree. Urutan load `ModelsDev.populate` adalah disk → snapshot → fetch
+  (`packages/core/src/models-dev.ts:184`), jadi `OPENCODE_MODELS_PATH`
+  menghilangkan fetch sama sekali.
 - Repository-wide `bun run lint` still exits on a pre-existing octal-literal
   error in `packages/session-ui/src/v2/components/prompt-input/index.tsx`;
   changed-file lint had no errors (only existing warnings).
@@ -175,9 +201,15 @@ dari package app).
   Bukti kualitas yang dipakai: typecheck `packages/core` + `packages/
 protocol` + `packages/server` + `packages/sdk/js`, test suite, dan
   httpapi-exercise.
-- Mode `effect` pada harness httpapi-exercise punya 8 kegagalan
-  **pre-existing** (butuh provider/model eksternal) — terverifikasi gagal
-  identik di tree baseline; bukan regresi. (Mode coverage hijau penuh.)
+- Mode `effect` pada harness httpapi-exercise **bisa hijau penuh** di sandbox
+  ini, asal katalog model disediakan lokal. Kegagalan `212 pass / 8 fail` yang
+  sebelumnya dianggap "pre-existing / butuh provider eksternal" sebenarnya
+  akibat egress sandbox yang memblokir `https://models.opencode.ai`
+  (`curl` gagal `SSL_ERROR_SYSCALL` bahkan dengan `-k`, jadi bukan soal
+  sertifikat). Solusinya:
+  `OPENCODE_MODELS_PATH=test/tool/fixtures/models-api.json` → `220/220 pass`.
+  Jangan warisi asumsi lama bahwa delapan kegagalan itu tak terhindarkan.
+  (Mode coverage hijau penuh dengan atau tanpa env ini.)
 - Jangan jalankan pekerjaan berat bersamaan (dua tsgo/test suite sekaligus
   membuat sandbox nyaris lumpuh ±10 menit).
 - Sandbox bisa **kehilangan toolchain bun + node_modules** antar sesi:
