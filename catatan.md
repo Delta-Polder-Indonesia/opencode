@@ -224,12 +224,17 @@ dan uji `-WithDevUi`. Audit isi repo saat menjadi publik: tidak ada kredensial
 asli (yang cocok dengan pola rahasia hanya fixture tes, mis. `sk-1234...` dan
 `AKIAIOSFODNN7EXAMPLE`); TIDAK ada `.env`/kunci privat/berkas >5MB; commit
 trailer `Co-authored-by` adalah artefak hook sandbox, bukan rahasia. Satu
-kebocoran nyata dari kerjaan sesi ini: contoh `<IP-PC>` (IP LAN user)
-ditulis di `script/dev-safe.ps1` — sudah diganti `<IP-PC>` di HEAD, tetapi masih
-ada di blob commit `7e67146` dan `a07919f` (perlu tulis ulang riwayat kalau mau
-benar-benar hilang; belum dilakukan karena mengubah SHA). Belum aktif dan
-sebaiknya dinyalakan di Settings: Dependabot alerts (terkonfirmasi mati) dan
-secret protection/push protection.
+kebocoran nyata dari kerjaan sesi ini: contoh IP LAN pribadi user tertulis di
+`script/dev-safe.ps1` (kini diganti `<IP-PC>`) dan ikut tersimpan di blob commit
+lama. **Riwayat branch sudah ditulis ulang** dengan
+`git filter-repo --replace-text` (pemetaan IP → `<IP-PC>`, termasuk pesan
+commit) sehingga seluruh riwayat bersih; konsekuensinya SEMUA SHA commit branch
+berubah dan branch perlu force-push. Catatan praktis: `--replace-message`
+menulis ulang setiap pesan commit dan karena itu mengubah hash SELURUH riwayat
+(termasuk `main`) — jangan dipakai kalau ingin base tetap sama; `--replace-text`
+saja hanya menyentuh commit yang benar-benar berubah. Belum aktif dan sebaiknya
+dinyalakan di Settings: Dependabot alerts (terkonfirmasi mati) dan secret
+protection/push protection.
 
 Tiga jebakan PowerShell yang ditemukan di sesi ini (semuanya terbukti lewat CI,
 bukan lewat pembacaan kode):
