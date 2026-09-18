@@ -68,15 +68,50 @@ describe("mainBundleDir", () => {
   // have absolute path"), and the entry point is whatever was on the command
   // line -- `electron dist/main/index.cjs` yields a relative filename.
   test("returns an absolute path even when launched with a relative entry", () => {
-    const dir = mainBundleDir({ filename: join("dist", "main", "index.cjs") } as NodeJS.Module, join("/srv", "app"))
+    const dir = mainBundleDir(
+      { filename: join("dist", "main", "index.cjs") } as NodeJS.Module,
+      join("/srv", "app"),
+      undefined,
+    )
     expect(dir).toBe(join("/srv", "app", "dist", "main"))
     expect(isAbsolute(dir)).toBe(true)
   })
 
   test("leaves an already absolute entry untouched", () => {
     const entry = join("/opt", "OpenCode", "dist", "main", "index.cjs")
-    expect(mainBundleDir({ filename: entry } as NodeJS.Module, join("/somewhere", "else"))).toBe(
+    expect(mainBundleDir({ filename: entry } as NodeJS.Module, join("/somewhere", "else"), undefined)).toBe(
       join("/opt", "OpenCode", "dist", "main"),
     )
+  })
+
+  // Electron does not populate require.main in the main process. Without a
+  // runtime __dirname that fell through to the cwd, which put the preload
+  // lookup beside the repository root instead of beside the bundle.
+  test("prefers the runtime directory over the entry point", () => {
+    const dir = mainBundleDir(
+      { filename: join("/wrong", "place", "index.cjs") } as NodeJS.Module,
+      join("/srv", "app"),
+      join("/opt", "OpenCode", "dist", "main"),
+    )
+    expect(dir).toBe(join("/opt", "OpenCode", "dist", "main"))
+  })
+
+  test("uses the runtime directory when there is no entry point at all", () => {
+    const dir = mainBundleDir(
+      undefined,
+      join("/repo", "packages", "desktop"),
+      join("/repo", "packages", "desktop", "dist", "main"),
+    )
+    expect(dir).toBe(join("/repo", "packages", "desktop", "dist", "main"))
+    // The bug produced /repo/packages/preload/index.cjs; guard against it.
+    expect(join(dir, "..", "preload", "index.cjs")).toBe(
+      join("/repo", "packages", "desktop", "dist", "preload", "index.cjs"),
+    )
+  })
+
+  test("resolves a relative runtime directory against the cwd", () => {
+    const dir = mainBundleDir(undefined, join("/srv", "app"), join("dist", "main"))
+    expect(dir).toBe(join("/srv", "app", "dist", "main"))
+    expect(isAbsolute(dir)).toBe(true)
   })
 })

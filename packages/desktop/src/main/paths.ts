@@ -1,27 +1,48 @@
 import { dirname, join, resolve } from "node:path"
 
 /**
+ * Reads the CommonJS `__dirname` that the runtime actually provides.
+ *
+ * It has to go through `eval` because Bun's bundler substitutes any literal
+ * `__dirname` token at build time with the absolute path of the *source* file.
+ * `eval` runs in the enclosing scope, so it sees the real value Node/Electron
+ * injects into the module wrapper instead of a string frozen at build time.
+ */
+function runtimeDirname(): string | undefined {
+  try {
+    // eslint-disable-next-line no-eval
+    const value = eval("typeof __dirname !== 'undefined' ? __dirname : undefined") as unknown
+    return typeof value === "string" && value ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Directory of the running main-process bundle, always absolute.
  *
- * `__dirname` cannot be used here. Bun's bundler substitutes it at build time
- * with the absolute path of the *source* file, so a bundle built in
- * `src/main/` kept resolving siblings against `src/main/` no matter where the
- * bundle actually ran from -- which meant the preload script was looked up at
- * `src/preload/index.cjs` instead of `dist/preload/index.cjs`, and would have
- * pointed outside the installation entirely in a packaged build.
+ * Three things conspire here, and each one produced a different failure:
  *
- * `require.main.filename` survives bundling because it is resolved at runtime,
- * and for the Electron main process it is the entry point Electron launched.
- * That entry can be whatever was on the command line, so it may be relative --
- * and Electron rejects a relative `preload` path outright. Resolving here keeps
- * that guarantee in one place instead of at each call site.
+ *  - A literal `__dirname` is replaced at build time with the source path, so
+ *    `dist/main` resolved its siblings against `src/main` forever.
+ *  - `require.main` is not populated in the Electron main process, so deriving
+ *    the directory from the entry point silently fell through to the cwd and
+ *    looked for the preload script beside the repository root.
+ *  - Electron rejects a relative `preload` path outright, so whatever is
+ *    returned must be absolute.
+ *
+ * So: ask the runtime for the real `__dirname`, fall back to the entry point,
+ * and only then to the working directory -- resolving in every case.
  */
-export function mainBundleDir(main: NodeJS.Module | undefined = require.main, cwd = process.cwd()) {
+export function mainBundleDir(
+  main: NodeJS.Module | undefined = typeof require === "undefined" ? undefined : require.main,
+  cwd = process.cwd(),
+  dirnameOverride: string | undefined = runtimeDirname(),
+) {
+  if (dirnameOverride) return resolve(cwd, dirnameOverride)
   const entry = main?.filename
-  // Electron always sets require.main for the main process; if it is somehow
-  // absent, the working directory is a better guess than a stale build-time path.
-  if (!entry) return resolve(cwd)
-  return resolve(cwd, dirname(entry))
+  if (entry) return resolve(cwd, dirname(entry))
+  return resolve(cwd)
 }
 
 /** Executable name of the bundled backend, per platform. */

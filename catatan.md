@@ -667,6 +667,34 @@ relatif dan absolut). Dibuktikan pada modul hasil build dengan meniru persis
 kasus yang gagal (`filename: "dist/main/index.cjs"`, cwd paket): hasilnya
 `/repo/packages/desktop/dist/preload/index.cjs`, absolut.
 
+#### 2026-09-19 — Lanjutan: `require.main` kosong di Electron
+
+Perbaikan path absolut menghilangkan penolakan Electron, lalu muncul gejala
+ketiga — path preload kehilangan `desktop\dist` sama sekali:
+
+```
+ENOENT ... E:\guthub\opencodev2\opencode\packages\preload\index.cjs
+```
+
+**Sebab.** Electron **tidak mengisi `require.main`** pada proses utama. Fallback
+`process.cwd()` yang terpakai, lalu `join(cwd, "..", "preload")` naik satu
+tingkat dari root repo — menghasilkan `packages\preload`. Kegagalan senyap:
+tidak ada error, hanya path yang salah.
+
+**Perbaikan.** `runtimeDirname()` membaca `__dirname` yang **sungguh disediakan
+runtime** lewat `eval`. `eval` dieksekusi di scope pemanggil sehingga melihat
+nilai asli dari module wrapper Node/Electron, dan karena bundler tidak dapat
+melihatnya secara statis, token itu tidak ikut diganti saat build. Urutannya
+kini: `__dirname` runtime → entry point → cwd, semuanya di-`resolve`.
+
+Ketiga penyebab berbeda pada satu baris kode ini kini terkunci tes:
+substitusi build-time, `require.main` kosong, dan keharusan path absolut.
+
+Verifikasi: `bun test src` **98 pass / 0 fail** (3 tes regresi baru). Dibuktikan
+pada modul hasil build yang disalin ke lokasi lain dan dijalankan dengan cwd
+berbeda: `mainBundleDir` mengikuti lokasi bundel (`/tmp/evalprobe/moved/dist/main`),
+bukan cwd.
+
 **Langkah berikutnya**
 
 1. Kompilasi backend untuk `windows-x64` dan uji `script/backend.ts --target windows-x64`.
