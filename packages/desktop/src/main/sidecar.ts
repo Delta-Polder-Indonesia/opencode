@@ -1,6 +1,6 @@
 import * as http from "node:http"
 import * as tls from "node:tls"
-import { dirname, join } from "node:path"
+import { dirname, join, sep } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 type NodeHttpWithEnvProxy = typeof http & {
@@ -181,7 +181,15 @@ async function importServer(): Promise<ServerNamespace> {
 function resolveServerModuleUrl(): string {
   const preferred = process.env.OPENCODE_SERVER_MODULE_URL
   if (preferred) return preferred
-  const here = dirname(fileURLToPath(import.meta.url))
+  let here = dirname(fileURLToPath(import.meta.url))
+  // When packaged, the main/sidecar live inside app.asar but the server bundle
+  // is unpacked (see `asarUnpack` in electron-builder.config.ts) so its dynamic
+  // import — and its bare specifier deps jsonc-parser/@lydell/node-pty — load
+  // from the real filesystem instead of Electron's asar ESM loader.
+  const asarSegment = `${sep}app.asar`
+  if (here.includes(asarSegment) && !here.includes(`${asarSegment}.unpacked`)) {
+    here = here.replace(asarSegment, `${asarSegment}.unpacked`)
+  }
   return pathToFileURL(join(here, "chunks", "node.js")).href
 }
 

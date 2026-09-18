@@ -376,6 +376,31 @@ arsitektur desktop upstream (`anomalyco/opencode`) ke kontrak fork ini.
   plugin upload Sentry; untuk ~2600 modul, generasi map sendirian cukup untuk
   OOM 4 GB. Release CI (Sentry terkonfigurasi) tetap menghasilkan map.
 
+**Verifikasi packaging (`electron-builder --dir`, baru ter-unblock):**
+
+Memakai `electron-builder --dir -c.electronDist=/tmp/fake-electron-dist`
+(binary asli tetap tak bisa diunduh), builder **berhasil (exit 0)** menghasilkan
+`dist/linux-unpacked/` berisi `app.asar` (135 MB) + `app.asar.unpacked` +
+eksekutabel `ai.opencode.desktop.dev`. Ini pertama kalinya keluaran package
+nyata diproduksi di sini. Isi `app.asar` diverifikasi: `out/main/{index.js,
+sidecar.js,chunks node.js+4 wasm}`, `out/preload`, renderer penuh, plus
+`jsonc-parser` & `@lydell/node-pty`(+`node-pty-linux-x64/pty.node`) &
+`@parcel/watcher-linux-x64`.
+
+**Risiko runtime asar → mitigasi `asarUnpack`:** `node.js` di-load runtime via
+dynamic `import()` ber-URL berkas dan mengimpor bare specifier
+`jsonc-parser`/`@lydell/node-pty`. Dynamic import ESM di *dalam* `app.asar`
+bermasalah di loader ESM Electron (kasus `ERR_MODULE_NOT_FOUND` terdokumentasi;
+panduan electron-vite juga mensyaratkan path `app.asar.unpacked`). Mitigasi:
+(1) `electron-builder.config.ts` kini punya `asarUnpack` untuk
+`out/main/chunks/**`, `node_modules/jsonc-parser/**`, `node_modules/@lydell/
+node-pty/**`; (2) `sidecar.ts` `resolveServerModuleUrl()` mengganti
+`app.asar` → `app.asar.unpacked` di path ketika di-package. Terverifikasi:
+import `node.js` dari lokasi unpacked di Node 22 → ekspor lengkap, tanpa
+`NODE_PATH` buatan (resolusi upward-walk natural `node_modules`), lalu
+`Server.listen` → health 200 → stop bersih. Jadi kontrak package ≈ teruji di
+harness sebelum binary asli tersedia.
+
 **Kendala/risiko:**
 
 - Sandbox memblokir unduhan binary Electron. Pemetaan egress **definitif**

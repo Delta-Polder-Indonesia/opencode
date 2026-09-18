@@ -46,6 +46,17 @@ const getBase = (appId: string): Configuration => ({
     desktopName: `${appId}.desktop`,
   },
   files: ["out/**/*", "resources/**/*", "!resources/opencode-cli*"],
+  // The sidecar loads the server bundle (`out/main/chunks/node.js`) at runtime
+  // via dynamic `import()` of a file URL. Electron's ESM loader is unreliable
+  // for dynamic imports *inside* app.asar, so keep the bundle and its bare
+  // specifier runtime deps (`jsonc-parser`, `@lydell/node-pty`) on the real
+  // filesystem — the exact layout the Node 22 harness already verified.
+  // Platform native binaries (node-pty-*, watcher) are auto-unpacked separately.
+  asarUnpack: [
+    "out/main/chunks/**/*",
+    "node_modules/jsonc-parser/**/*",
+    "node_modules/@lydell/node-pty/**/*",
+  ],
   mac: {
     category: "public.app-category.developer-tools",
     icon: `resources/icons/icon.icns`,
