@@ -164,6 +164,17 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - name: Pastikan uji e2e tidak diam-diam dilewati
+        if: ${{ success() && (github.event_name != 'workflow_dispatch' || inputs.run_e2e) }}
+        run: |
+          $summary = Get-Content "dev-safe-summary.md" -Raw
+          $row = ($summary -split "`n" | Where-Object { $_ -match "Server nyata" })
+          if (-not $row) { throw "Baris uji e2e tidak ada di ringkasan" }
+          if ($row -match "dilewati") { throw "Uji e2e dilewati padahal diminta berjalan: $row" }
+          if ($row -notmatch "lulus") { throw "Uji e2e tidak lulus: $row" }
+          Write-Host "Uji e2e benar-benar dijalankan dan lulus."
+          Write-Host $row.Trim()
+
       - name: Ringkasan hasil
         if: always()
         run: |
