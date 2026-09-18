@@ -24,7 +24,7 @@ import { failureSummary, type BackendPhase } from "./backend-policy"
 import { allowInAppNavigation, isLoopbackUrl, resolveLocalServerUrl } from "./config"
 import { DesktopLog } from "./log"
 import { buildMenuTemplate, menuPlatform } from "./menu"
-import { backendBinaryPath } from "./paths"
+import { backendBinaryPath, mainBundleDir } from "./paths"
 import { DesktopStorage } from "./storage"
 import {
   IPC,
@@ -52,6 +52,20 @@ const DEFAULT_SERVER_NAMESPACE = "settings"
 const DEFAULT_SERVER_KEY = "defaultServerUrl"
 
 const log = new DesktopLog(app.getPath("logs"))
+/** Resolved once: every sibling bundle is located relative to this. */
+const MAIN_DIR = mainBundleDir()
+
+/** Shape of the Electron 36+ console-message event. */
+type ConsoleMessageEvent = {
+  level?: "debug" | "info" | "warning" | "error"
+  message?: string
+  lineNumber?: number
+  sourceId?: string
+}
+
+/** Pre-36 Electron reported console levels as 0=verbose 1=info 2=warning 3=error. */
+const LEGACY_CONSOLE_LEVELS = ["debug", "info", "warning", "error"] as const
+
 const storage = new DesktopStorage(join(app.getPath("userData"), "storage"))
 const windowIDs = new WeakMap<BrowserWindow, string>()
 let translations: DesktopNativeBundle | undefined
@@ -61,7 +75,7 @@ const backend = new BackendSupervisor({
     platform: process.platform,
     packaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
-    mainDir: __dirname,
+    mainDir: MAIN_DIR,
   }),
   cwd: app.getPath("userData"),
   log,
@@ -110,7 +124,7 @@ function t(key: DesktopNativeKey) {
 
 function rendererEntry() {
   if (IS_DEV && DEV_RENDERER_URL) return { type: "url" as const, value: DEV_RENDERER_URL }
-  const file = join(__dirname, "..", "renderer", "index.html")
+  const file = join(MAIN_DIR, "..", "renderer", "index.html")
   return { type: "file" as const, value: file }
 }
 
@@ -218,7 +232,7 @@ async function createWindow() {
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#10100e" : "#fafafa",
     autoHideMenuBar: process.platform !== "darwin",
     webPreferences: {
-      preload: join(__dirname, "..", "preload", "index.cjs"),
+      preload: join(MAIN_DIR, "..", "preload", "index.cjs"),
       // Security baseline for stage 1C: no Node in the renderer, isolated
       // context, OS sandbox on, no remote module, web security enforced.
       nodeIntegration: false,
@@ -254,12 +268,18 @@ async function createWindow() {
   // Without this, a renderer exception leaves a blank window and the reason is
   // only visible in devtools, which are closed by default. Mirror it into the
   // main-process log so a bug report has something to go on.
-  window.webContents.on("console-message", (_event, level, message, line, sourceId) => {
-    // 0=verbose 1=info 2=warning 3=error; only surface the actionable ones.
-    if (level < 2) return
-    const where = sourceId ? ` (${sourceId}:${line})` : ""
+  // Electron 36+ passes a single event object; the positional-argument form is
+  // deprecated. Read from the event and only fall back for older runtimes.
+  window.webContents.on("console-message", (event: ConsoleMessageEvent, ...rest: unknown[]) => {
+    const legacyLevel = typeof rest[0] === "number" ? (rest[0] as number) : undefined
+    const level = event?.level ?? (legacyLevel === undefined ? undefined : LEGACY_CONSOLE_LEVELS[legacyLevel])
+    if (level !== "warning" && level !== "error") return
+    const message = event?.message ?? (typeof rest[1] === "string" ? rest[1] : "")
+    const source = event?.sourceId ?? (typeof rest[3] === "string" ? rest[3] : "")
+    const line = event?.lineNumber ?? (typeof rest[2] === "number" ? rest[2] : 0)
+    const where = source ? ` (${source}:${line})` : ""
     // `log.write` redacts, so credentials in a renderer log are not leaked here.
-    log.write(level >= 3 ? "error" : "warn", `[renderer] ${message}${where}`)
+    log.write(level === "error" ? "error" : "warn", `[renderer] ${message}${where}`)
   })
 
   window.webContents.on("preload-error", (_event, preloadPath, error) => {

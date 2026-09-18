@@ -606,6 +606,44 @@ Catatan: perbaikan ini membuat penyebab layar putih **terlihat**, belum tentu
 menghapusnya. Penyebab persisnya di mesin pengguna masih perlu dipastikan dari
 pesan yang kini muncul.
 
+#### 2026-09-19 — Penyebab layar putih ditemukan: `__dirname` di-inline bundler
+
+Log diagnostik yang ditambahkan sebelumnya langsung menjawabnya:
+
+```
+[renderer] Unable to load preload script: ...\packages\desktop\src\preload\index.cjs
+[error] preload script failed at ...\src\preload\index.cjs: ENOENT
+```
+
+Preload dicari di `src/preload/` padahal hasil build ada di `dist/preload/`.
+
+**Akar masalah.** `src/main/index.ts` memakai `__dirname` untuk menemukan bundel
+saudaranya. Bun **mengganti `__dirname` saat build** dengan path absolut berkas
+**sumber**, jadi bundel di `dist/main/` tetap mencari saudaranya relatif terhadap
+`src/main/` selamanya. Diverifikasi langsung pada bundel hasil build:
+
+```
+var __dirname = "/home/user/opencode/packages/desktop/src/main";
+```
+
+Ini bukan hanya soal mode dev. Path yang ditanam menunjuk ke **mesin tempat build
+dilakukan**, sehingga installer Windows akan gagal dengan cara yang sama — dan
+tidak akan ketahuan sampai Tahap 1D. Kebetulan tertangkap lebih awal.
+
+**Perbaikan.** `mainBundleDir()` di `paths.ts` memakai `require.main.filename`,
+yang tidak bisa diganti saat build karena baru diketahui saat runtime, dan untuk
+proses utama Electron nilainya adalah entry point yang diluncurkan. Tidak ada
+lagi `__dirname` di kode sumber desktop. Diverifikasi dengan menjalankan bundel
+dari lokasi berbeda: path mengikuti lokasi runtime, bukan lokasi build.
+
+Sekalian: `console-message` memakai bentuk argumen posisional yang sudah
+deprecated di Electron 36+ (peringatannya muncul di log pengguna). Kini membaca
+objek event, dengan fallback untuk runtime lama.
+
+Verifikasi: `bun test src` **93 pass / 0 fail** (3 tes regresi `mainBundleDir`),
+bundel hasil build tidak lagi memuat path absolut build-time, oxlint dan prettier
+bersih.
+
 **Langkah berikutnya**
 
 1. Kompilasi backend untuk `windows-x64` dan uji `script/backend.ts --target windows-x64`.

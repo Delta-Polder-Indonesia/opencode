@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { join } from "node:path"
-import { backendBinaryName, backendBinaryPath } from "./paths"
+import { backendBinaryName, backendBinaryPath, mainBundleDir } from "./paths"
 
 describe("backendBinaryName", () => {
   test("uses the .exe suffix on Windows only", () => {
@@ -39,5 +39,28 @@ describe("backendBinaryPath", () => {
       mainDir: join("C:", "app", "resources", "app.asar", "dist", "main"),
     })
     expect(path).not.toContain("app.asar")
+  })
+})
+
+// Bun inlines `__dirname` as the absolute path of the source file at build
+// time, so using it here resolved sibling bundles against `src/main/` forever:
+// the preload script was looked up at `src/preload/index.cjs` rather than
+// `dist/preload/index.cjs`, and in a packaged app it pointed outside the
+// installation entirely. These pin the runtime behaviour.
+describe("mainBundleDir", () => {
+  test("follows the entry point wherever the bundle actually runs", () => {
+    const dir = mainBundleDir({
+      filename: join("/opt", "OpenCode", "app", "dist", "main", "index.cjs"),
+    } as NodeJS.Module)
+    expect(dir).toBe(join("/opt", "OpenCode", "app", "dist", "main"))
+  })
+
+  test("locates the preload bundle next to the main bundle, not next to the source", () => {
+    const dir = mainBundleDir({ filename: join("/opt", "app", "dist", "main", "index.cjs") } as NodeJS.Module)
+    expect(join(dir, "..", "preload", "index.cjs")).toBe(join("/opt", "app", "dist", "preload", "index.cjs"))
+  })
+
+  test("falls back to the working directory when there is no entry point", () => {
+    expect(mainBundleDir(undefined)).toBe(process.cwd())
   })
 })
