@@ -5,8 +5,10 @@ Catatan kerja fork `Delta-Polder-Indonesia/opencode`. Sesi berjalan:
 (item 4a/gate 1, PR #4), `arena/01a0b189-opencode` (item 4a-lanjut/gate 3),
 lalu `arena/01a0b19d-opencode` (gate 3 lanjutan: auto-resume inbox),
 `arena/01a0b1cd-opencode` (stale-owner fencing), lalu
-`arena/01a0b1b6-opencode` (item 4 final review), dan sekarang
-`arena/01a0b221-opencode` (audit klaim catatan + rapikan dokumentasi perf).
+`arena/01a0b1b6-opencode` (item 4 final review),
+`arena/01a0b221-opencode` (audit klaim catatan + rapikan dokumentasi perf),
+dan sekarang `arena/01a0b49c-opencode` (dev-safe: deteksi binary opencode
+lama + URL hanya tampil setelah server sehat).
 Ditulis ulang 2026-09-18 setelah slice item 4 selesai.
 
 Hasil audit `arena/01a0b221-opencode` (2026-09-18): seluruh 8 item di bawah
@@ -208,6 +210,35 @@ sehari-hari (`opencode web` / `serve`) di Windows:
   di `packages/app/vite.config.ts`), dan `-FromSource` untuk menjalankan
   checkout ini lewat `bun`.
 - `script/dev-safe.cmd` — pembungkus klik-dua-kali untuk script di atas.
+
+Laporan nyata dari user (2026-09-18, sesi `arena/01a0b49c-opencode`): setelah
+isi password muncul URL `http://localhost:4096`, beberapa detik kemudian error
+`Failed to change directory to E:\...\opencode\web --port 4096 --hostname
+127.0.0.1` dan jendela tertutup. Penyebabnya: **`opencode` di PATH mesin itu
+versi lama / asing** (versi pastinya tidak diketahui) yang tidak mengenal
+perintah `web`/`serve`; semua argumen digabung lalu dianggap nama folder
+proyek. Pesan "Failed to change directory to" tidak ada di kode fork ini,
+jadi binary-nya memang bukan dari versi sekarang. Dua kelemahan script ikut terlihat: URL ditampilkan SEBELUM server
+terbukti hidup, dan kode keluar selalu 0 walau server gagal. Perbaikan di
+`dev-safe.ps1`:
+
+1. **Pra-cek kemampuan** sebelum tahap password: `<binary> <mode> --help`
+   wajib memuat opsi `--hostname`; kalau tidak, script berhenti dengan
+   petunjuk jelas (`where.exe opencode`, `npm i -g opencode-ai@latest`,
+   alternatif `-FromSource`). Shim `.ps1` dilewati dari pra-cek ini karena
+   jebakan `exit` dalam-sesi yang sudah pernah terjadi.
+2. **Mode biasa kini menjalankan server sebagai proses anak** (pola yang sama
+   dengan jalur `-WithDevUi`), menunggu `/global/health` menjawab 200 sambil
+   mendeteksi kematian dini proses, dan BARU menampilkan URL setelah server
+   benar-benar sehat. Kode keluar proses server diteruskan (dulu selalu 0).
+
+`dev-safe.tests.ps1` menambah 2 uji regresi (total 11): binary tiruan "lama"
+(tanpa `--hostname` di help) harus ditolak sebelum tahap password dengan
+petunjuk pembaruan; binary tiruan yang mati dengan `exit /b 3` saat
+menjalankan server harus menghasilkan kode keluar 3, pesan "langsung
+berhenti", dan tanpa banner "Server siap". `Invoke-DevSafe` kini selalu
+meneruskan `-Opencode` supaya pengujian bisa mengganti binary lewat
+`$script:Opencode` apa pun mode pemanggilan runner-nya.
 
 CI-nya: `.github/workflows/dev-safe-windows.yml` (job `windows-latest`, dipicu
 `workflow_dispatch` dengan input `run_e2e`, atau push yang menyentuh file-file
