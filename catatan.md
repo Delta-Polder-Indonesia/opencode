@@ -193,6 +193,31 @@ dari package app).
 - Generated `packages/opencode/config.json` was removed; `openapi.json` and
   `bun.lock` remain uncommitted per the standing constraints.
 
+## Alat bantu dev Windows (sesi `arena/01a0b41d-opencode`, 2026-09-18)
+
+Bukan bagian dari 5 item prioritas — ini kebutuhan operasional pemakaian
+sehari-hari (`opencode web` / `serve`) di Windows:
+
+- `script/dev-safe.ps1` — runner PowerShell. Selalu meminta
+  `OPENCODE_SERVER_PASSWORD` (prompt tanpa echo, tidak masuk riwayat),
+  membind `127.0.0.1` kecuali `-AllowLan`, membersihkan env var setelah
+  server berhenti, dan punya `-Verify` (mode periksa: apakah port
+  mendengarkan di `0.0.0.0` dan apakah autentikasi aktif / `401`).
+  Opsi baru: `-WithDevUi` (+ `-DevUiPort`, default 3000) menjalankan server
+  di belakang lalu Vite dev UI di `127.0.0.1` (menimpa `host: "0.0.0.0"`
+  di `packages/app/vite.config.ts`), dan `-FromSource` untuk menjalankan
+  checkout ini lewat `bun`.
+- `script/dev-safe.cmd` — pembungkus klik-dua-kali untuk script di atas.
+
+Temuan yang perlu diketahui: `opencode attach <url>` (dan `run`) **belum ada**
+di fork ini — `packages/opencode/src/cli/cmd/` tidak punya `attach.ts`,
+sementara upstream `anomalyco/opencode` punya. Halaman docs
+`opencode.ai/docs/web/` bagian "Attaching a Terminal" karena itu tidak
+berlaku di fork ini. Bagian lain halaman itu (port/hostname/mdns/cors/
+password) sudah terverifikasi cocok, dengan satu detail tak terdokumentasi:
+mDNS hanya memaksa hostname `0.0.0.0` kalau `server.hostname` di config
+tidak diisi.
+
 ## Batasan sandbox yang HARUS diketahui sesi berikutnya
 
 - **RAM ~3.9GB, tanpa swap.** `bun run typecheck` di `packages/opencode`

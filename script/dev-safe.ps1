@@ -11,9 +11,12 @@
   Contoh:
     powershell -ExecutionPolicy Bypass -File .\script\dev-safe.ps1
     powershell -ExecutionPolicy Bypass -File .\script\dev-safe.ps1 -Mode serve -Port 4096
-    powershell -ExecutionPolicy Bypass -File .\script\dev-safe.ps1 -FromSource
+    powershell -ExecutionPolicy Bypass -File .\script\dev-safe.ps1 -WithDevUi
+    powershell -ExecutionPolicy Bypass -File .\script\dev-safe.ps1 -FromSource -WithDevUi
     powershell -ExecutionPolicy Bypass -File .\script\dev-safe.ps1 -Verify
     powershell -ExecutionPolicy Bypass -File .\script\dev-safe.ps1 -AllowLan -Cors http://<IP-PC>:3000
+
+  Atau klik dua kali: script\dev-safe.cmd
 #>
 param(
   # "web" = server + UI di satu port (paling simpel, tanpa urusan CORS).
@@ -21,6 +24,10 @@ param(
   [ValidateSet("web", "serve")][string]$Mode = "web",
   [int]$Port = 4096,
   [string]$User = "opencode",
+  # Nyalakan juga Vite dev server (UI dengan hot reload) di 127.0.0.1.
+  # Otomatis memakai mode "serve", karena UI-nya dilayani Vite.
+  [switch]$WithDevUi,
+  [int]$DevUiPort = 3000,
   # Jalankan dari source checkout ini lewat bun, bukan binary yang terpasang.
   [switch]$FromSource,
   # Membuka ke seluruh jaringan. Berisiko: siapa pun di Wi-Fi yang sama bisa
@@ -67,6 +74,14 @@ function Read-PlainPassword([string]$Prompt) {
   }
 }
 
+# Start-Process menggabungkan argumen jadi satu baris perintah, jadi argumen
+# yang mengandung spasi (mis. path repo "C:\My Projects\opencode") harus
+# dikutip manual.
+function Quote-Arg([string]$Value) {
+  if ($Value -match '\s') { return '"' + $Value + '"' }
+  return $Value
+}
+
 # Alamat mana saja yang saat ini mendengarkan port tersebut.
 function Get-ListenerAddress([int]$ProbePort) {
   $found = @()
@@ -80,14 +95,8 @@ function Get-ListenerAddress([int]$ProbePort) {
 }
 
 function Get-HttpStatus([string]$Url, [string]$BasicAuth) {
-  $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
-  if ($curl) {
-    if ($BasicAuth) {
-      return (& curl.exe -s -o NUL -w "%{http_code}" -u $BasicAuth $Url).Trim()
-    }
-    return (& curl.exe -s -o NUL -w "%{http_code}" $Url).Trim()
-  }
-  # Cadangan kalau curl.exe tidak tersedia.
+  # Invoke-WebRequest dipakai lebih dulu karena berjalan di dalam proses ini:
+  # password tidak muncul di command line proses lain (beda dengan curl -u user:pass).
   $headers = @{}
   if ($BasicAuth) {
     $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($BasicAuth))
@@ -98,8 +107,20 @@ function Get-HttpStatus([string]$Url, [string]$BasicAuth) {
     return [string][int]$response.StatusCode
   } catch {
     if ($_.Exception.Response) { return [string][int]$_.Exception.Response.StatusCode }
-    return "tidak-ada-jawaban"
   }
+
+  # Cadangan: curl.exe (juga untuk server yang menolak koneksi).
+  $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+  if ($curl) {
+    $code = ""
+    if ($BasicAuth) {
+      $code = (& curl.exe -s -o NUL -w "%{http_code}" -u $BasicAuth $Url).Trim()
+    } else {
+      $code = (& curl.exe -s -o NUL -w "%{http_code}" $Url).Trim()
+    }
+    if ($code -and $code -ne "000") { return $code }
+  }
+  return "tidak-ada-jawaban"
 }
 
 function Show-ExposureReport([int]$ProbePort) {
@@ -140,10 +161,43 @@ function Show-ExposureReport([int]$ProbePort) {
   }
 }
 
+# Tunggu sampai server benar-benar siap sebelum UI dijalankan.
+function Wait-ForHealth([int]$ProbePort, [string]$BasicAuth, [int]$TimeoutSeconds = 20) {
+  $url = "http://127.0.0.1:$ProbePort/global/health"
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    if ((Get-HttpStatus $url $BasicAuth) -eq "200") { return $true }
+    Start-Sleep -Milliseconds 500
+  }
+  return $false
+}
+
+# Cari cara menjalankan Vite: shim di node_modules\.bin (bun/npm membuat
+# vite.cmd atau vite.exe di Windows), kalau tidak ada pakai `bun x vite`.
+# Mengembalikan array: [0] = perintah, sisanya = argumen awal.
+function Resolve-ViteCommand([string]$RepoRoot) {
+  $binNames = @("vite.cmd", "vite.exe", "vite.ps1", "vite")
+  $binDirs = @(
+    (Join-Path $RepoRoot "node_modules\.bin"),
+    (Join-Path $RepoRoot "packages\app\node_modules\.bin")
+  )
+  foreach ($dir in $binDirs) {
+    foreach ($name in $binNames) {
+      $candidate = Join-Path $dir $name
+      if (Test-Path $candidate) { return @($candidate) }
+    }
+  }
+  if (Get-Command bun -ErrorAction SilentlyContinue) { return @("bun", "x", "vite") }
+  return @()
+}
+
 if ($Verify) {
   Write-Host ""
   Write-Host "Mode periksa saja (tidak menjalankan server)." -ForegroundColor Yellow
   Show-ExposureReport $Port
+  if ($WithDevUi -and $DevUiPort -ne $Port) {
+    Show-ExposureReport $DevUiPort
+  }
   Write-Head "Kalau password aktif, uji dengan kredensial"
   Write-Note "curl.exe -s -o NUL -w `"%{http_code}`" -u $User:PASSWORD http://127.0.0.1:$Port/global/health"
   Write-Note "Harapannya 200. Kalau 401, password atau username salah."
@@ -151,11 +205,21 @@ if ($Verify) {
   exit 0
 }
 
-# --- Susun perintah -------------------------------------------------------
-$arguments = @($Mode, "--port", "$Port", "--hostname", $(if ($AllowLan) { "0.0.0.0" } else { "127.0.0.1" }))
-foreach ($origin in $Cors) {
-  if ($origin) { $arguments += @("--cors", $origin) }
+if ($WithDevUi -and $Mode -ne "serve") {
+  Write-Host ""
+  Write-Note "Mode dipaksa jadi `"serve`" karena UI-nya dilayani Vite dev server."
+  $Mode = "serve"
 }
+
+# --- Susun perintah -------------------------------------------------------
+$serverArgs = @($Mode, "--port", "$Port", "--hostname", $(if ($AllowLan) { "0.0.0.0" } else { "127.0.0.1" }))
+foreach ($origin in $Cors) {
+  if ($origin) { $serverArgs += @("--cors", $origin) }
+}
+
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$prefix = @()
+$launcher = $Opencode
 
 if ($FromSource) {
   $bun = Get-Command bun -ErrorAction SilentlyContinue
@@ -164,24 +228,38 @@ if ($FromSource) {
     Write-Note "Jalankan tanpa -FromSource untuk memakai binary opencode yang terpasang."
     exit 1
   }
-  $repoRoot = Split-Path -Parent $PSScriptRoot
-  $arguments = @("run", "--cwd", (Join-Path $repoRoot "packages\opencode"), "src\index.ts") + $arguments
-  $Opencode = "bun"
+  $launcher = "bun"
+  $prefix = @("run", "--cwd", (Join-Path $repoRoot "packages\opencode"), "src\index.ts")
 }
 
-$binary = Get-Command $Opencode -ErrorAction SilentlyContinue
+$binary = Get-Command $launcher -ErrorAction SilentlyContinue
 if (-not $binary) {
-  Write-Head "opencode tidak ditemukan di PATH"
+  Write-Head "$launcher tidak ditemukan di PATH"
   Write-Note "Pasang dulu:  npm i -g opencode-ai@latest   (atau scoop install opencode)"
   Write-Note "Kalau menjalankan dari checkout ini, pakai -FromSource."
   Write-Note "Atau tunjuk langsung: -Opencode `"C:\path\ke\opencode.exe`""
   exit 1
 }
+# Start-Process butuh path lengkap; kalau launcher-nya .cmd (mis. bun dari npm)
+# nama telanjang tidak selalu bisa ditemukan.
+$launcherPath = if ($binary.Source) { $binary.Source } else { $launcher }
+
+$viteCommand = @()
+if ($WithDevUi) {
+  $viteCommand = Resolve-ViteCommand $repoRoot
+  if ($viteCommand.Count -eq 0) {
+    Write-Head "Dependensi belum terpasang (Vite tidak ditemukan)"
+    Write-Note "Jalankan dulu di root repo:  bun install"
+    Write-Note "Lalu ulangi perintah ini."
+    exit 1
+  }
+}
 
 Write-Host ""
 Write-Host "  opencode - jalan aman di Windows" -ForegroundColor White
+$modeLabel = if ($WithDevUi) { "serve + Vite dev UI" } else { $Mode }
 $bind = if ($AllowLan) { "0.0.0.0 (JARINGAN)" } else { "127.0.0.1 (PC ini saja)" }
-Write-Host "  mode: $Mode   port: $Port   bind: $bind" -ForegroundColor White
+Write-Host "  mode: $modeLabel   API: $Port   bind: $bind" -ForegroundColor White
 
 # --- Password -------------------------------------------------------------
 $password = $env:OPENCODE_SERVER_PASSWORD
@@ -218,32 +296,96 @@ if ($AllowLan) {
 }
 
 # --- Jalankan -------------------------------------------------------------
+# Password hanya ada di environment proses ini; proses anak (server) mewarisinya.
 $env:OPENCODE_SERVER_PASSWORD = $password
+$basicAuth = "$User`:$password"
 
 Write-Head "Menjalankan"
-if ($AllowLan) {
-  Write-Note "URL dari perangkat lain : http://<IP-PC>:$Port"
-} elseif ($Mode -eq "web") {
-  Write-Note "Buka di browser         : http://localhost:$Port"
-} else {
-  Write-Note "API                     : http://localhost:$Port  (UI dev Vite menyasar port ini otomatis)"
-}
-Write-Note "Username                : $User"
-Write-Note "Password                : (yang baru kamu isi)"
-Write-Note "Perintah                : $Opencode $($arguments -join ' ')"
-Write-Note "Berhenti                : Ctrl+C"
+Write-Note "Perintah : $launcher $((($prefix + $serverArgs) -join ' '))"
+Write-Note "Username : $User"
+Write-Note "Password : (yang baru kamu isi)"
+Write-Note "Berhenti : Ctrl+C"
 Write-Host ""
 
+if (-not $WithDevUi) {
+  # Satu proses di foreground: Ctrl+C menghentikan server.
+  if ($AllowLan) {
+    Write-Note "URL dari perangkat lain : http://<IP-PC>:$Port"
+  } elseif ($Mode -eq "web") {
+    Write-Note "Buka di browser         : http://localhost:$Port"
+  } else {
+    Write-Note "API                     : http://localhost:$Port  (UI dev Vite menyasar port ini otomatis)"
+  }
+  Write-Host ""
+
+  try {
+    & $launcher @($prefix + $serverArgs)
+  } finally {
+    if (-not $passwordFromEnv -and -not $KeepPasswordEnv) {
+      Remove-Item Env:OPENCODE_SERVER_PASSWORD -ErrorAction SilentlyContinue
+      Write-Host ""
+      Write-Note "OPENCODE_SERVER_PASSWORD sudah dibersihkan dari sesi ini."
+    }
+    Write-Head "Verifikasi (jalankan di PowerShell lain selagi server hidup)"
+    Write-Note "powershell -ExecutionPolicy Bypass -File .\script\dev-safe.ps1 -Verify -Port $Port"
+    Write-Note "Atau manual: netstat -ano | findstr :$Port"
+    Write-Note "Harus muncul 127.0.0.1:$Port . Kalau muncul 0.0.0.0:$Port berarti terbuka ke jaringan."
+  }
+  exit 0
+}
+
+# --- Mode UI dev: server di belakang, Vite di depan ------------------------
+$serverProcess = $null
 try {
-  & $Opencode @arguments
+  $spawnArgs = (($prefix + $serverArgs) | ForEach-Object { Quote-Arg $_ }) -join " "
+  $serverProcess = Start-Process -FilePath $launcherPath -ArgumentList $spawnArgs -PassThru -NoNewWindow
+  Write-Note "Server berjalan sebagai proses PID $($serverProcess.Id)."
+
+  if (-not (Wait-ForHealth $Port $basicAuth 25)) {
+    Write-Bad "Server tidak menjawab di http://127.0.0.1:$Port dalam 25 detik."
+    Write-Note "Kalau pakai -FromSource, pastikan `"bun install`" di root repo sudah dijalankan."
+    exit 1
+  }
+  Write-Ok "Server siap di http://127.0.0.1:$Port (autentikasi aktif)."
+
+  Write-Head "Vite dev UI"
+  Write-Note "URL        : http://localhost:$DevUiPort"
+  Write-Note "Bind       : 127.0.0.1 (menimpa host 0.0.0.0 di vite.config.ts)"
+  Write-Note "Target API : http://localhost:$Port (otomatis dari packages/app/src/entry.tsx)"
+  Write-Note "Login di UI: username $User + password yang baru kamu isi"
+  Write-Note "Berhenti   : Ctrl+C (server ikut dimatikan)"
+  Write-Note "Kalau port $DevUiPort sedang dipakai, pakai -DevUiPort <lain>, mis. -DevUiPort 3001"
+  Write-Host ""
+
+  $viteExe = $viteCommand[0]
+  $viteArgs = @()
+  if ($viteCommand.Count -gt 1) { $viteArgs = $viteCommand[1..($viteCommand.Count - 1)] }
+
+  Push-Location (Join-Path $repoRoot "packages\app")
+  try {
+    & $viteExe @($viteArgs + @("--host", "127.0.0.1", "--port", "$DevUiPort", "--strictPort"))
+  } finally {
+    Pop-Location
+  }
 } finally {
+  if ($serverProcess) {
+    $serverProcess.Refresh()
+    if (-not $serverProcess.HasExited) {
+      Write-Host ""
+      Write-Note "Mematikan server opencode (PID $($serverProcess.Id))..."
+      try {
+        & taskkill /PID $serverProcess.Id /T /F 2>&1 | Out-Null
+      } catch {
+        Write-Note "Gagal mematikan otomatis; tutup manual PID $($serverProcess.Id) kalau perlu."
+      }
+    }
+  }
   if (-not $passwordFromEnv -and -not $KeepPasswordEnv) {
     Remove-Item Env:OPENCODE_SERVER_PASSWORD -ErrorAction SilentlyContinue
-    Write-Host ""
     Write-Note "OPENCODE_SERVER_PASSWORD sudah dibersihkan dari sesi ini."
   }
   Write-Head "Verifikasi (jalankan di PowerShell lain selagi server hidup)"
-  Write-Note "powershell -ExecutionPolicy Bypass -File .\script\dev-safe.ps1 -Verify -Port $Port"
-  Write-Note "Atau manual: netstat -ano | findstr :$Port"
+  Write-Note "powershell -ExecutionPolicy Bypass -File .\script\dev-safe.ps1 -Verify -Port $Port -WithDevUi -DevUiPort $DevUiPort"
+  Write-Note "Atau manual: netstat -ano | findstr `":$Port `""
   Write-Note "Harus muncul 127.0.0.1:$Port . Kalau muncul 0.0.0.0:$Port berarti terbuka ke jaringan."
 }
