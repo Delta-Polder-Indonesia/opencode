@@ -122,9 +122,10 @@ dari package app).
   `v2.session.permission.create`, `session.init`, `session.prompt`,
   `session.prompt_async`, `session.command`, and `session.summarize`; they
   require provider/model-backed or legacy route behavior and are not the
-  coverage/auth contract gates. A later full diagnostic rerun reached the
-  180-second command timeout before buffered scenario output, so it is not
-  used as acceptance evidence.
+  coverage/auth contract gates. One diagnostic rerun timed out at 180 seconds
+  before buffered output; the requested retry with `--progress` completed in
+  `248.772s` and reproduced the same eight failures (with
+  `session.prompt_async` reaching its 30-second scenario timeout).
 - Repository-wide `bun run lint` still exits on a pre-existing octal-literal
   error in `packages/session-ui/src/v2/components/prompt-input/index.tsx`;
   changed-file lint had no errors (only existing warnings).
