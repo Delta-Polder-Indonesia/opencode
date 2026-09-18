@@ -1,12 +1,12 @@
 export * as BackgroundJobStore from "./store"
 
-import { and, desc, eq, ne } from "drizzle-orm"
+import { and, desc, eq, lt, ne } from "drizzle-orm"
 import { Clock, Effect } from "effect"
 import type { Database } from "../database/database"
 import { Identifier } from "../id/id"
 import { BackgroundJob } from "../background-job"
 import { SessionSchema } from "../session/schema"
-import { BackgroundJobTable } from "./sql"
+import { BackgroundJobTable, RuntimeFenceTable } from "./sql"
 
 type DatabaseService = Database.Interface["db"]
 
@@ -20,12 +20,13 @@ export const MAX_PERSISTED_OUTPUT_BYTES = 16_384
 export const INTERRUPTED_ERROR = "Process exited while this job was running; its outcome is unknown."
 
 /**
- * One ascending marker per process. Recovery claims only rows whose marker
- * differs, so current-runtime rows are never touched (also making recovery
- * idempotent across Location rebuilds within one process). This is NOT
- * ownership fencing: correctness still assumes one live runtime per
- * database. See specs/v2/background-jobs.md.
+ * Fence time-to-live. A runtime's fence row is considered expired when
+ * `now - heartbeat_at > FENCE_TTL_MS`. Must exceed `HEARTBEAT_INTERVAL_MS`
+ * by a comfortable margin so one missed heartbeat does not expire the fence.
  */
+export const FENCE_TTL_MS = 30_000
+
+/** One ascending marker per process. See `claimFence` for ownership semantics. */
 let currentRuntime: string | undefined
 export const runtimeID = () => currentRuntime ?? (currentRuntime = Identifier.ascending("runtime"))
 
@@ -121,12 +122,18 @@ export const list = Effect.fn("BackgroundJobStore.list")(function* (db: Database
 })
 
 /**
- * Restart recovery: atomically claim every `running` row owned by a foreign
- * runtime as `interrupted` and return the claimed rows. Rows of the current
- * runtime and settled rows are never touched. Each claim is a guarded
- * UPDATE…RETURNING, so concurrent recoveries cannot double-claim a row.
+ * Restart recovery: atomically claim every durable `running` row owned by
+ * a runtime whose fence has expired, then deliver the usual completion note
+ * to each claimed job's owner session when that session still exists.
+ * Rows with no fence row at all (pre-fence migrations, or fence cleaned up
+ * after clean exit) are treated as expired — safe under the single-writer
+ * assumption. Claiming and delivery are independent: a delivery failure
+ * never unclaims the row, and rows without owner metadata or with deleted
+ * sessions are still claimed. Runs at tool-layer boot, before any tool can
+ * execute.
  */
 export const recover = Effect.fn("BackgroundJobStore.recover")(function* (db: DatabaseService) {
+  const now = yield* Clock.currentTimeMillis
   const stale = yield* db
     .select()
     .from(BackgroundJobTable)
@@ -134,8 +141,10 @@ export const recover = Effect.fn("BackgroundJobStore.recover")(function* (db: Da
     .all()
     .pipe(Effect.orDie)
   const claimed: BackgroundJob.Info[] = []
-  const completed_at = yield* Clock.currentTimeMillis
+  const completed_at = now
   for (const row of stale) {
+    const age = yield* fenceAge(db, row.runtime_id)
+    if (age !== null && age <= FENCE_TTL_MS) continue
     const updated = yield* db
       .update(BackgroundJobTable)
       .set({ status: "interrupted", completed_at, error: INTERRUPTED_ERROR })
@@ -146,4 +155,89 @@ export const recover = Effect.fn("BackgroundJobStore.recover")(function* (db: Da
     if (updated) claimed.push(fromRow(updated))
   }
   return claimed
+})
+
+/* ---- Runtime fence (lease-based stale-owner detection) ---- */
+
+/**
+ * Return the age (ms since heartbeat) of a runtime's fence, or `null` when
+ * no fence row exists for that runtime (pre-fence rows, or a runtime that
+ * released its fence on clean exit). Callers treat `null` as expired under
+ * the single-writer assumption.
+ */
+export const fenceAge = Effect.fn("BackgroundJobStore.fenceAge")(function* (
+  db: DatabaseService,
+  fenceRuntimeID: string,
+) {
+  const now = yield* Clock.currentTimeMillis
+  const row = yield* db
+    .select({ heartbeat_at: RuntimeFenceTable.heartbeat_at })
+    .from(RuntimeFenceTable)
+    .where(eq(RuntimeFenceTable.runtime_id, fenceRuntimeID))
+    .get()
+    .pipe(Effect.orDie)
+  return row === undefined ? null : now - row.heartbeat_at
+})
+
+/**
+ * Claim (or reclaim) the process-global fence row. Atomic upsert: either
+ * inserts a fresh row for this runtime, or overwrites a row whose
+ * `heartbeat_at` is older than `FENCE_TTL_MS`. Returns `true` when the
+ * claim succeeds, `false` when another runtime holds a live fence (caller
+ * should NOT proceed with recovery).
+ *
+ * Must be called once at process boot, before `insert` or `recover`.
+ * Claiming and recovery are intentionally separate operations: a fence
+ * failure means "another runtime is alive — do not touch its rows".
+ */
+export const claimFence = Effect.fn("BackgroundJobStore.claimFence")(function* (db: DatabaseService) {
+  const now = yield* Clock.currentTimeMillis
+  const rid = runtimeID()
+  const existing = yield* db
+    .select()
+    .from(RuntimeFenceTable)
+    .get()
+    .pipe(Effect.orDie)
+  if (existing === undefined) {
+    yield* db.insert(RuntimeFenceTable).values({ runtime_id: rid, heartbeat_at: now }).run().pipe(Effect.orDie)
+    return true
+  }
+  if (existing.runtime_id === rid) return true
+  if (now - existing.heartbeat_at > FENCE_TTL_MS) {
+    yield* db
+      .update(RuntimeFenceTable)
+      .set({ runtime_id: rid, heartbeat_at: now })
+      .where(eq(RuntimeFenceTable.runtime_id, existing.runtime_id))
+      .run()
+      .pipe(Effect.orDie)
+    return true
+  }
+  return false
+})
+
+/**
+ * Renew the heartbeat for the current runtime's fence row. Called
+ * periodically by the `RuntimeFence` service. A failure is logged but
+ * never crashes the process — the fence will expire naturally.
+ */
+export const heartbeatFence = Effect.fn("BackgroundJobStore.heartbeatFence")(function* (db: DatabaseService) {
+  const now = yield* Clock.currentTimeMillis
+  yield* db
+    .update(RuntimeFenceTable)
+    .set({ heartbeat_at: now })
+    .where(eq(RuntimeFenceTable.runtime_id, runtimeID()))
+    .run()
+    .pipe(Effect.orDie)
+})
+
+/**
+ * Release the fence row on clean shutdown. The next process boot sees no
+ * row and claims immediately without waiting for TTL expiry.
+ */
+export const releaseFence = Effect.fn("BackgroundJobStore.releaseFence")(function* (db: DatabaseService) {
+  yield* db
+    .delete(RuntimeFenceTable)
+    .where(eq(RuntimeFenceTable.runtime_id, runtimeID()))
+    .run()
+    .pipe(Effect.orDie)
 })

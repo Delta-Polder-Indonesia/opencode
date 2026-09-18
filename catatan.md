@@ -3,8 +3,9 @@
 Catatan kerja fork `Delta-Polder-Indonesia/opencode`. Sesi berjalan:
 `arena/01a0b0bc-opencode` (item 1–3, PR #3), `arena/01a0b171-opencode`
 (item 4a/gate 1, PR #4), `arena/01a0b189-opencode` (item 4a-lanjut/gate 3),
-lalu `arena/01a0b19d-opencode` (gate 3 lanjutan: auto-resume inbox).
-Ditulis ulang 2026-09-17 setelah slice auto-resume selesai.
+`arena/01a0b19d-opencode` (gate 3 lanjutan: auto-resume inbox),
+lalu `arena/01a0b1cd-opencode` (stale-owner fencing).
+Ditulis ulang 2026-09-18 setelah slice fencing selesai.
 Rencana induk: 5 perbaikan prioritas yang disepakati user (lihat
 `specs/v2/todo.md` dan dokumen per-fase di `specs/v2/`).
 
@@ -82,6 +83,23 @@ background-job.ts` yang hanya butuh `Database.Service`.
    attempt yang ambigu. Dok: `specs/v2/background-jobs.md` +
    `specs/v2/session.md` + entri done di `specs/v2/todo.md`.
 
+7. **Stale-owner fencing / clustered execution** — branch
+   `arena/01a0b1cd-opencode`. Tabel lease `runtime_fence` (migrasi
+   `20260918000000_runtime_fence`) melacak liveness proses via heartbeat
+   periodik (interval 10 detik, TTL 30 detik). Service `RuntimeFence`
+   (global node, depends on `Database`) mengklaim baris fence secara atomik
+   saat boot; fiber heartbeat memperbarui baris setiap 10 detik; finalizer
+   melepaskan baris saat shutdown bersih; crash membiarkan baris kedaluwarsa
+   secara natural. Recovery `JobTool` kini hanya mengklaim baris `running`
+   milik runtime yang fence-nya sudah kedaluwarsa ATAU tidak punya baris
+   fence sama sekali (pra-migrasi / shutdown bersih). `JobTool.node`
+   depends on `RuntimeFence.node` sehingga fence selalu diklaim sebelum
+   recovery berjalan. Verifikasi: core 1140/1140 (baseline 1128 + 12 tes
+   fence), typecheck core bersih, httpapi-exercise 214/214 + auth 214/214.
+   Dok: `specs/v2/background-jobs.md` (section "Stale-owner fencing") +
+   `specs/v2/todo.md` (entri done). HTTP mutation (cancel via API) kini
+   tidak diblokir oleh fencing.
+
 ## Yang BELUM selesai (antrian sesi berikutnya, urutan prioritas user)
 
 4-lanjut. **Sisa item #4** — urutannya:
@@ -91,9 +109,7 @@ continuation recovery" di `todo.md`) — auto-resume inbox sudah DONE
 penuh — provider-attempt preparation vs dispatch ambiguity, keputusan
 eksplisit `retry`/`abandon`, bounded automatic retry, budget/backoff,
 status pemulihan yang terlihat, dan startup discovery.
-b. **Stale-owner fencing / clustered execution** — lease/heartbeat di
-atas `runtime_id`; terkait interruption/retries terkluster di todo.
-Prekursor HTTP mutation (cancel via API) menunggu ini.
+b. **Stale-owner fencing / clustered execution** — DONE (lihat #7).
 c. **Kecepatan test suite** — `specs/perf/test-suite.md`; belum mulai. 5. Pinggir lain (bukan prioritas user, tercatat di dokumen fase): adopsi
 cursor di app/desktop sync (menunggu "New Data Mode"); background agent
 dispatch (`job_*` dispatch-ready, tapi tool `task`/sub-agent V2 belum ada

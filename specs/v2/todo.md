@@ -82,8 +82,17 @@ Next reviewed slices:
   `queue`-delivery and silent: a just-booted process does not schedule provider work. The wake is
   advisory only — it never re-dispatches an interrupted provider attempt. See
   `specs/v2/background-jobs.md`
-- add durable/clustered interruption, retries, and stale-owner fencing only as
-  their slices become concrete
+- ~~add stale-owner fencing / clustered execution~~ **done** (arena/01a0b1cd):
+  a `runtime_fence` lease table tracks per-process liveness via periodic heartbeats (10 s
+  interval, 30 s TTL). On boot the `RuntimeFence` service atomically claims the fence row;
+  recovery now only claims background-job rows whose owning runtime's fence has expired (or
+  rows with no fence row — pre-fence migrations / clean shutdown). The fence prevents recovery
+  from reclaiming rows owned by a live process. The heartbeat fiber is process-global (one per
+  process, anchored at root via `RuntimeFence.node`), released on clean shutdown, and
+  overwritten after TTL expiry on crash. `JobTool.node` depends on `RuntimeFence.node` so
+  the fence is always claimed before recovery runs. See `specs/v2/background-jobs.md` and
+  `packages/core/src/runtime-fence.ts`. HTTP mutation (cancel over API) is now unblocked —
+  the fence provides the ownership verification needed for cross-process control.
 
 ### Deferred durable continuation recovery
 
@@ -158,9 +167,10 @@ failure appears during canary work:
 
 - serialize database migration claiming across processes; current migration
   application is protected only by an in-process semaphore, so two processes
-  starting against one SQLite database can still race (same class:
-  background-job restart-recovery claims assume one live runtime per
-  database; `runtime_id` is a marker, not a fence)
+  starting against one SQLite database can still race (same class as the
+  `runtime_fence` claim: fencing prevents recovery from reclaiming live
+  runtimes' rows, but two processes that both believe they hold the fence
+  can still race on claims)
 - simplify process-local durable-tail wake lifecycle with Effect `RcMap` and one
   shared `PubSub.sliding<void>(1)` per active aggregate; keep SQLite cursor replay
   and subscribe-before-history semantics unchanged

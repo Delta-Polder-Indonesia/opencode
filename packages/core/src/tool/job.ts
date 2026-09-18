@@ -8,6 +8,7 @@ import { Database } from "../database/database"
 import { makeLocationNode } from "../effect/app-node"
 import { EventV2 } from "../event"
 import { PositiveInt } from "../schema"
+import { RuntimeFence } from "../runtime-fence"
 import { SessionInput } from "../session/input"
 import { SessionMessage } from "../session/message"
 import { Prompt } from "../session/prompt"
@@ -343,5 +344,5 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/job",
   layer,
-  deps: [ToolRegistry.node, BackgroundJob.node, Database.node, EventV2.node],
+  deps: [ToolRegistry.node, BackgroundJob.node, Database.node, EventV2.node, RuntimeFence.node],
 })

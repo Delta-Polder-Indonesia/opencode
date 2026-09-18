@@ -3,7 +3,8 @@
 Status: gates 1+2 implemented (gate 2 on branch `arena/01a0b0bc-opencode`,
 gate 1 on branch `arena/01a0b171-opencode`); gate 3 (HTTP observation) is
 specified below and implemented on `arena/01a0b189-opencode`; auto-resume on
-completion delivery implemented on `arena/01a0b19d-opencode`. Supersedes the
+completion delivery implemented on `arena/01a0b19d-opencode`; stale-owner
+fencing implemented on `arena/01a0b1cd-opencode`. Supersedes the
 "integrate the new BackgroundJob service with V2 tool execution" entry in
 `todo.md`. This document is the design contract; keep the remaining-slices
 section accurate as follow-ups land.
@@ -147,14 +148,29 @@ Write path:
 never settles to it. The registry itself stays intentionally in-memory and
 process-local — durability is layered around it, not inside it.
 
-### Runtime identity and restart recovery
+### Runtime identity, restart recovery, and stale-owner fencing
 
-Each process generates one ascending `runtime_…` identifier. Recovery runs
-once per Location service boot inside the `tool/job` node (before any tool
-can execute) and claims every row that satisfies **both**: `status =
-running` **and** `runtime_id` differs from the current process. Each claim is
-an atomic `UPDATE … WHERE id = ? AND status = 'running' RETURNING`, setting
-`status = interrupted`, `completed_at = now`, and
+Each process generates one ascending `runtime_…` identifier. A
+`runtime_fence` table (one row per active runtime) tracks liveness via
+periodic heartbeats. On boot the `RuntimeFence` service atomically claims
+the fence row (insert if absent, overwrite if the previous owner's fence
+has expired, fail if another runtime holds a live fence). The heartbeat
+fiber renews the fence every 10 seconds; the row is released on clean
+shutdown. See `packages/core/src/runtime-fence.ts` and
+`packages/core/src/background-job/store.ts`.
+
+Recovery runs once per Location service boot inside the `tool/job` node
+(before any tool can execute) and claims every row that satisfies **all
+three**:
+
+1. `status = running`
+2. `runtime_id` differs from the current process
+3. the owning runtime's fence has expired (age > 30 s), **or** no fence
+   row exists for that runtime (pre-fence migrations, or clean shutdown
+   that released the fence)
+
+Each claim is an atomic `UPDATE … WHERE id = ? AND status = 'running'
+RETURNING`, setting `status = interrupted`, `completed_at = now`, and
 `error = "Process exited while this job was running; its outcome is
 unknown."` Rows belonging to the current runtime are never touched (this
 also makes recovery idempotent across Location rebuilds within one process),
@@ -166,14 +182,56 @@ delivered (skipped for deleted sessions and rows without owner metadata;
 claim and delivery are independent — a delivery failure never unclaims the
 row).
 
+### Stale-owner fencing (detailed)
+
+The `runtime_fence` table has two columns:
+
+| column         | content                                                        |
+| -------------- | -------------------------------------------------------------- |
+| `runtime_id`   | process-local ascending identifier (primary key)               |
+| `heartbeat_at` | epoch millis of the last heartbeat renewal                     |
+
+Constants:
+
+- `FENCE_TTL_MS = 30_000` — a fence row is considered expired when
+  `now - heartbeat_at > FENCE_TTL_MS`.
+- `HEARTBEAT_INTERVAL_MS = 10_000` — the heartbeat fiber renews the row
+  every 10 seconds, so one missed heartbeat does not expire the fence
+  (three consecutive failures would be needed).
+
+Lifecycle:
+
+1. **Boot**: `RuntimeFence` (global node, depends on `Database`) calls
+   `claimFence`. If no row exists, inserts one; if the existing row
+   belongs to another runtime and is expired, overwrites it; if the
+   existing row is live, returns `false` and logs a warning (the caller
+   decides whether to retry or proceed without recovery). The fence
+   claim **must** succeed before `BackgroundJobStore.insert` or
+   `recover` can run safely.
+2. **Heartbeat**: a `forkScoped` fiber runs `heartbeatFence` every 10
+   seconds. Failures are logged but never crash the process.
+3. **Shutdown**: the finalizer calls `releaseFence` (DELETE the row),
+   so the next boot sees no row and claims immediately.
+4. **Crash**: no release runs; the row persists with a stale
+   `heartbeat_at`. After `FENCE_TTL_MS` the next boot overwrites it.
+
+`JobTool.node` depends on `RuntimeFence.node`, so the fence is always
+claimed before recovery runs. The `RuntimeFence` node is global and
+anchored at the application root, so exactly one heartbeat fiber runs
+per process regardless of how many Location trees are built.
+
 ### Semantics guarantees (and non-guarantees)
 
-- Single-writer assumption: recovery is correct under **one live runtime per
-  database**. Two processes against one SQLite database can race on claims;
-  this is the same class as the existing process-local advisory-wake and
-  migration-claiming debt in `todo.md`. Stale-owner fencing (leases,
-  heartbeats, or clustered ownership) is a later slice and must not be
-  inferred from `runtime_id` alone.
+- Single-writer assumption with fence safety: the fence prevents
+  recovery from claiming rows owned by a runtime that is still
+  heartbeating. Without the fence, recovery would claim any foreign
+  `runtime_id` row — even one owned by a live process. With the fence,
+  recovery only claims rows whose owner's heartbeat has expired (or rows
+  with no fence at all, which are safe under the single-writer
+  assumption). Two processes against one SQLite database can still race
+  on claims if the fence-claim sequence is not atomic at the database
+  level; this is the same class as the existing migration-claiming debt
+  in `todo.md`.
 - The durable row is the restart-time truth; the live registry remains the
   live-time truth. A live `job_get` always prefers the registry, so full
   in-memory output stays available for the process lifetime even though the
@@ -307,6 +365,18 @@ Unit/integration coverage in `packages/core/test/`:
   - the hub is one shared instance between the application root and Location
     trees, while a global reachable only through a Location tree stays
     per-Location (the property the wiring depends on).
+- `runtime-fence.test.ts`
+  - `claimFence` succeeds when no fence exists, succeeds idempotently for
+    the same runtime, fails when another runtime holds a live fence, and
+    succeeds when the existing fence has expired,
+  - `heartbeatFence` renews the fence timestamp,
+  - `releaseFence` removes the fence row,
+  - `fenceAge` returns `null` for non-existent fences and the correct age
+    for existing fences,
+  - recovery claims rows whose owning runtime fence has expired, skips rows
+    whose owning runtime fence is still live, claims rows with no fence row
+    (pre-fence migration / clean shutdown), skips current-runtime rows
+    regardless of fence state, and handles mixed fences correctly.
 - `httpapi-exercise` route coverage:
   - `v2.job.list` returns seeded durable rows newest-first and honors the
     `sessionID` filter,
@@ -327,12 +397,11 @@ already takes ~700 s and is OOM-prone) and is intentionally not gating here.
   visible recovery status, and startup discovery remain deferred to the slice
   described in `specs/v2/todo.md`.
 - **HTTP mutation (cancel over API)**: read-only observation landed with
-  gate 3; cross-process cancel/wait needs stale-owner fencing first so a
-  cancel of a dead runtime's `running` row cannot pretend to stop work.
-- **Stale-owner fencing / clustered execution**: lease or heartbeat-based
-  ownership so multiple runtimes can share one database safely; builds on
-  the `runtime_id` column but must not be inferred from it yet. Tracked with
-  the interruption/retries/fencing entry in `todo.md`.
+  gate 3; stale-owner fencing now protects recovery from claiming live
+  runtimes' rows. Cross-process cancel over HTTP is the next mutation
+  slice — the fence provides the necessary ownership verification so
+  cancelling a `running` row can check whether the owner is actually
+  alive.
 - **Background agent dispatch**: the `job_*` tools are agent-dispatch ready
   (ownership + wait/cancel are dispatch-agnostic), but a V2 sub-agent tool
   does not exist in core yet; port `task` from the app package first
