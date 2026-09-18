@@ -9,8 +9,13 @@
     5. -Verify mengenali server yang minta login (401) sebagai aman.
     6. -Verify mengenali server tanpa autentikasi (200) sebagai BAHAYA.
     7. -NonInteractive tanpa OPENCODE_SERVER_PASSWORD -> gagal (exit 1).
-    8. (opsional, -IncludeE2E) server opencode sungguhan: bind hanya 127.0.0.1,
+    8. opencode lama (tanpa perintah web/serve) ditolak sebelum tahap password.
+    9. Server yang langsung berhenti: URL "siap" tidak tampil, kode keluar
+      proses diteruskan.
+   10. (opsional, -IncludeE2E) server opencode sungguhan: bind hanya 127.0.0.1,
       401 tanpa kredensial, 200 dengan kredensial, tanpa peringatan "unsecured".
+   11. -WithDevUi menunggu server siap sebelum menjalankan Vite (--host
+      127.0.0.1) dan merapikan proses setelahnya.
 
   Pemakaian:
     pwsh -NoProfile -File script/dev-safe.tests.ps1              # uji 1-7
@@ -66,7 +71,9 @@ function Invoke-DevSafe([string[]]$Arguments, [string]$Password) {
   $errFile = [System.IO.Path]::GetTempFileName()
   $previousPassword = $env:OPENCODE_SERVER_PASSWORD
   $forward = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Target)
-  if ($PSBoundParameters.ContainsKey("Opencode") -and $Opencode) {
+  # Selalu diteruskan supaya uji bisa mengganti binary lewat $script:Opencode,
+  # baik saat runner memakai -Opencode maupun tidak.
+  if ($Opencode) {
     $forward += @("-Opencode", $Opencode)
   }
   $line = (($forward + $Arguments) | ForEach-Object { Quote-Arg $_ }) -join " "
@@ -250,7 +257,57 @@ Test-Case "-NonInteractive tanpa password gagal (exit 1)" {
   Assert-True ($result.Output -match "OPENCODE_SERVER_PASSWORD tidak diset") "pesan penyebab tidak muncul"
 }
 
-# --- 8. Server opencode sungguhan (opsional) -------------------------------
+# --- 8. Binary asing tanpa perintah 'serve' ---------------------------------
+# Meniru jebakan nyata yang pernah dilaporkan user: opencode lama di PATH tidak
+# mengenal perintah web/serve dan menganggap semua argumen nama folder
+# ("Error: Failed to change directory to ..."). Script harus menolak SEBELUM
+# tahap password, dengan petunjuk memperbarui binary.
+Test-Case "opencode lama tanpa mode serve ditolak sebelum minta password" {
+  $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("opencode-lama-" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $fake = Join-Path $dir "opencode.cmd"
+  @("@echo off", "echo Error: Failed to change directory to %CD%\%*") | Set-Content -Path $fake -Encoding ASCII
+  $previousOpencode = $script:Opencode
+  $script:Opencode = $fake
+  try {
+    $result = Invoke-DevSafe @("-NonInteractive", "-Mode", "serve", "-Port", "$(Get-FreePort)") ""
+    Assert-True ($result.ExitCode -eq 1) "exit code $($result.ExitCode), harusnya 1`n$($result.Output)"
+    Assert-True ($result.Output -match "tidak mendukung mode") "pesan penolakan tidak muncul`n$($result.Output)"
+    Assert-True ($result.Output -match "opencode-ai@latest") "petunjuk pembaruan tidak muncul`n$($result.Output)"
+  } finally {
+    $script:Opencode = $previousOpencode
+    Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+# --- 9. Server yang gagal start ---------------------------------------------
+# Binary-nya lolos pra-cek (mengenal perintahnya), tapi langsung mati saat
+# diminta menjalankan server. Script tidak boleh menampilkan URL "siap",
+# harus melaporkan kegagalan, dan meneruskan kode keluar prosesnya.
+Test-Case "server yang langsung berhenti dilaporkan gagal (kode diteruskan)" {
+  $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("opencode-gagal-" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $fake = Join-Path $dir "opencode.cmd"
+  @(
+    "@echo off",
+    'echo %* | findstr /c:"--help" >nul && (echo Opsi: --port --hostname --cors & exit /b 0)',
+    "echo Error: port tidak bisa dipakai",
+    "exit /b 3"
+  ) | Set-Content -Path $fake -Encoding ASCII
+  $previousOpencode = $script:Opencode
+  $script:Opencode = $fake
+  try {
+    $result = Invoke-DevSafe @("-NonInteractive", "-Mode", "serve", "-Port", "$(Get-FreePort)") "rahasia-uji"
+    Assert-True ($result.ExitCode -eq 3) "exit code $($result.ExitCode), harusnya 3 (diteruskan dari proses server)`n$($result.Output)"
+    Assert-True ($result.Output -match "langsung berhenti") "kegagalan start tidak dilaporkan`n$($result.Output)"
+    Assert-True ($result.Output -notmatch "Server siap") "URL 'siap' tampil padahal server tidak pernah hidup`n$($result.Output)"
+  } finally {
+    $script:Opencode = $previousOpencode
+    Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+# --- 10. Server opencode sungguhan (opsional) -------------------------------
 # Sama seperti dev-safe.ps1: utamakan shim .exe/.cmd, jangan .ps1.
 $e2eCandidates = @(Get-Command $Opencode -All -ErrorAction SilentlyContinue)
 $e2eCommand = $e2eCandidates | Where-Object { $_.Source -match '\.(exe|cmd|bat)$' } | Select-Object -First 1
@@ -358,7 +415,7 @@ if ($IncludeE2E -and -not $e2eCommand) {
 }
 
 # --- Ringkasan -------------------------------------------------------------
-# --- 9. Mode -WithDevUi (Vite diganti shim palsu) --------------------------
+# --- 11. Mode -WithDevUi (Vite diganti shim palsu) --------------------------
 # Yang diuji: script menunggu server benar-benar siap sebelum UI dijalankan,
 # meneruskan --host 127.0.0.1 (menimpa host 0.0.0.0 di vite.config.ts), dan
 # membiarkan hanya 127.0.0.1 yang mendengarkan. Vite asli diganti shim .cmd

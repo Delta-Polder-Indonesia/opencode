@@ -7,6 +7,9 @@
        prompt sehingga tidak muncul di layar dan tidak masuk riwayat perintah.
     3. Password hanya hidup selama script ini berjalan, lalu dibersihkan lagi
        (kecuali -KeepPasswordEnv).
+    4. Binary yang terpanggil diverifikasi dulu mengenal mode yang diminta
+       ('<cmd> <mode> --help' harus memuat --hostname), dan URL baru
+       ditampilkan SETELAH server menjawab 200 di /global/health.
 
   Contoh:
     powershell -ExecutionPolicy Bypass -File .\script\dev-safe.ps1
@@ -259,6 +262,40 @@ if ($binary.Source -match '\.ps1$') {
 # Start-Process butuh path lengkap; nama telanjang tidak selalu bisa ditemukan.
 $launcherPath = if ($binary.Source) { $binary.Source } else { $launcher }
 
+# --- Pra-cek: binary ini benar-benar mengenal mode yang diminta? -------------
+# Jebakan nyata: opencode versi lama tidak punya perintah "web"/"serve". Semua
+# argumen malah dianggap nama folder dan ia gagal dengan "Failed to change
+# directory to <cwd>\web --port ..." — tampak seperti server yang error,
+# padahal server tidak pernah hidup.
+if ($launcherPath -match '\.ps1$') {
+  # Shim .ps1 berjalan di dalam sesi ini dan bisa mengakhiri skrip lewat
+  # 'exit', jadi pra-cek dilewati; catatan di atas sudah memperingatkan.
+  Write-Note "Pra-cek versi dilewati (shim .ps1 tidak aman dijalankan dari sini)."
+} else {
+  Write-Note "Memeriksa '$launcher $Mode --help' ..."
+  $helpText = ""
+  try {
+    $helpText = (& $launcherPath @($prefix + @($Mode, "--help")) 2>&1 | Out-String)
+  } catch {
+    $helpText = "gagal menjalankan: $($_.Exception.Message)"
+  }
+  if ($helpText -notmatch [regex]::Escape("--hostname")) {
+    Write-Head "opencode yang terpanggil tidak mendukung mode '$Mode'"
+    Write-Bad "'$launcher $Mode --help' tidak memuat opsi --hostname."
+    Write-Note "Binary: $launcherPath"
+    if ($FromSource) {
+      Write-Note "Kemungkinan dependensi belum lengkap. Jalankan di root repo:  bun install"
+      Write-Note "lalu ulangi perintah ini."
+    } else {
+      Write-Note "Biasanya ini versi lama; perintah '$Mode' belum ada di sana."
+      Write-Note "Periksa   : where.exe opencode   (bisa jadi ada lebih dari satu)"
+      Write-Note "Perbarui  : npm i -g opencode-ai@latest   (atau: scoop update opencode)"
+      Write-Note "Alternatif: dev-safe.cmd -FromSource   (jalan dari checkout ini, butuh bun)"
+    }
+    exit 1
+  }
+}
+
 $viteCommand = $null
 if ($WithDevUi) {
   $viteCommand = Resolve-ViteCommand $repoRoot
@@ -327,19 +364,67 @@ Write-Note "Berhenti : Ctrl+C"
 Write-Host ""
 
 if (-not $WithDevUi) {
-  # Satu proses di foreground: Ctrl+C menghentikan server.
-  if ($AllowLan) {
-    Write-Note "URL dari perangkat lain : http://<IP-PC>:$Port"
-  } elseif ($Mode -eq "web") {
-    Write-Note "Buka di browser         : http://localhost:$Port"
-  } else {
-    Write-Note "API                     : http://localhost:$Port  (UI dev Vite menyasar port ini otomatis)"
-  }
-  Write-Host ""
-
+  # Server dijalankan sebagai proses anak supaya kesehatannya bisa diverifikasi
+  # SEBELUM URL ditampilkan. Dulu URL tampil lebih dulu, jadi server yang gagal
+  # start tampak seperti "server hidup lalu error" — padahal tidak pernah hidup.
+  $serverProcess = $null
+  $exitCode = 0
   try {
-    & $launcher @($prefix + $serverArgs)
+    $spawnArgs = (($prefix + $serverArgs) | ForEach-Object { Quote-Arg $_ }) -join " "
+    $serverProcess = Start-Process -FilePath $launcherPath -ArgumentList $spawnArgs -PassThru -NoNewWindow
+    Write-Note "Server berjalan sebagai proses PID $($serverProcess.Id)."
+
+    # Tunggu sampai sehat, dan langsung menyerah kalau prosesnya mati duluan.
+    $ready = $false
+    $deadline = (Get-Date).AddSeconds(25)
+    while ((Get-Date) -lt $deadline) {
+      $serverProcess.Refresh()
+      if ($serverProcess.HasExited) { break }
+      if ((Get-HttpStatus "http://127.0.0.1:$Port/global/health" $basicAuth) -eq "200") { $ready = $true; break }
+      Start-Sleep -Milliseconds 400
+    }
+
+    $serverProcess.Refresh()
+    if (-not $ready -and $serverProcess.HasExited) {
+      $exitCode = $serverProcess.ExitCode
+      if ($exitCode -eq 0) { $exitCode = 1 }
+      Write-Bad "Server langsung berhenti dengan kode $exitCode. Lihat pesan error di atas."
+    } elseif (-not $ready) {
+      $exitCode = 1
+      Write-Bad "Server tidak menjawab di http://127.0.0.1:$Port dalam 25 detik."
+      Write-Note "Mungkin port $Port sedang dipakai proses lain. Cek: netstat -ano | findstr :$Port"
+      Write-Note "Kalau pakai -FromSource, pastikan `"bun install`" di root repo sudah dijalankan."
+    } else {
+      Write-Ok "Server siap di http://127.0.0.1:$Port (autentikasi aktif)."
+      if ($AllowLan) {
+        Write-Note "URL dari perangkat lain : http://<IP-PC>:$Port"
+      } elseif ($Mode -eq "web") {
+        Write-Note "Buka di browser         : http://localhost:$Port"
+      } else {
+        Write-Note "API                     : http://localhost:$Port  (UI dev Vite menyasar port ini otomatis)"
+      }
+      Write-Host ""
+
+      # Tunggu sampai server berhenti; Ctrl+C menghentikan keduanya lewat finally.
+      $serverProcess.WaitForExit()
+      $exitCode = $serverProcess.ExitCode
+      if ($exitCode -ne 0) {
+        Write-Bad "Server berhenti dengan kode $exitCode."
+      }
+    }
   } finally {
+    if ($serverProcess) {
+      $serverProcess.Refresh()
+      if (-not $serverProcess.HasExited) {
+        Write-Host ""
+        Write-Note "Mematikan server opencode (PID $($serverProcess.Id))..."
+        try {
+          & taskkill /PID $serverProcess.Id /T /F 2>&1 | Out-Null
+        } catch {
+          Write-Note "Gagal mematikan otomatis; tutup manual PID $($serverProcess.Id) kalau perlu."
+        }
+      }
+    }
     if (-not $passwordFromEnv -and -not $KeepPasswordEnv) {
       Remove-Item Env:OPENCODE_SERVER_PASSWORD -ErrorAction SilentlyContinue
       Write-Host ""
@@ -350,7 +435,7 @@ if (-not $WithDevUi) {
     Write-Note "Atau manual: netstat -ano | findstr :$Port"
     Write-Note "Harus muncul 127.0.0.1:$Port . Kalau muncul 0.0.0.0:$Port berarti terbuka ke jaringan."
   }
-  exit 0
+  exit $exitCode
 }
 
 # --- Mode UI dev: server di belakang, Vite di depan ------------------------
