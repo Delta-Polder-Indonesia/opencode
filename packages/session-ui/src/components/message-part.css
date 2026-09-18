@@ -291,6 +291,22 @@
 }
 
 [data-component="reasoning-part"] {
+  [data-slot="collapsible-trigger"] {
+    width: fit-content;
+    cursor: pointer;
+    gap: 4px;
+
+    [data-slot="collapsible-arrow"] {
+      opacity: 1;
+    }
+  }
+
+  [data-slot="reasoning-part-body"] {
+    max-height: 240px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
   width: 100%;
   color: var(--v2-text-text-muted);
   line-height: var(--line-height-normal);
