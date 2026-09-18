@@ -152,6 +152,15 @@ cd packages\desktop
 bun run build:backend
 ```
 
+Butuh koneksi internet: build mengunduh snapshot `models.dev` dan beberapa
+dependensi. Bila jaringan Anda memblokirnya, unduh `https://models.dev/api.json`
+secara manual lalu tunjuk ke berkasnya:
+
+```powershell
+$env:MODELS_DEV_API_JSON="C:\path\ke\api.json"
+bun run build:backend
+```
+
 Ini memanggil `bun build --compile` pada CLI opencode dan menaruh hasilnya di
 `packages\desktop\resources\backend\opencode.exe`. Pastikan file itu ada:
 
@@ -222,6 +231,12 @@ desktop, lalu `electron-builder --win --x64`. Hasilnya ada di
 ---
 
 ## Masalah yang mungkin muncul
+
+**`ENOENT ... .github\TEAM_MEMBERS`**
+
+Sudah diperbaiki — `git pull` lalu ulangi. Daftar itu hanya dipakai perkakas
+rilis, tetapi dibaca saat import sehingga menggagalkan semua build. Sekarang
+daftar yang tidak ada diperlakukan sebagai daftar kosong.
 
 **`bun run build:backend` gagal mencari `dist\opencode-windows-x64\bin\opencode.exe`**
 

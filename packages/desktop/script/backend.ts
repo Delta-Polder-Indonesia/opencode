@@ -20,6 +20,7 @@ const root = join(import.meta.dir, "..")
 const repo = join(root, "..", "..")
 const opencodeDir = join(repo, "packages", "opencode")
 const outDir = join(root, "resources", "backend")
+const desktopPkg = (await Bun.file(join(root, "package.json")).json()) as { version: string }
 
 const { values } = parseArgs({
   args: process.argv.slice(2),
@@ -53,10 +54,21 @@ if (values.from) {
 }
 
 console.log(`building backend for ${target} (this compiles the opencode CLI, it takes a while)`)
+/**
+ * Pin the version the backend reports.
+ *
+ * Left alone, the upstream build script derives it from the current git branch
+ * and, for non-preview builds, reaches out to the npm registry. That makes the
+ * desktop build depend on network access and on the branch name -- a branch
+ * containing a slash produces a version string like `0.0.0-feat/x-2026...`,
+ * which is not valid semver. The desktop shell only needs a stable identifier.
+ */
+const version = process.env.OPENCODE_VERSION ?? `${desktopPkg.version}-desktop`
 const build = Bun.spawn(["bun", "run", "script/build.ts", "--single", "--skip-embed-web-ui"], {
   cwd: opencodeDir,
   stdout: "inherit",
   stderr: "inherit",
+  env: { ...process.env, OPENCODE_VERSION: version, OPENCODE_CHANNEL: process.env.OPENCODE_CHANNEL ?? "desktop" },
 })
 if ((await build.exited) !== 0) throw new Error("backend build failed")
 

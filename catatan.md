@@ -534,6 +534,41 @@ Catatan lingkungan: `bun install` di sandbox gagal pada build native
 `platform.ts`. Error yang sama muncul pada commit sebelum perubahan ini —
 **kendala lingkungan, bukan regresi**.
 
+#### 2026-09-19 — Build backend diperbaiki; binary hasil kompilasi terverifikasi
+
+Uji coba Windows kedua (`bun run build:backend`) gagal dengan
+`ENOENT ... .github\TEAM_MEMBERS`. Dua cacat ditemukan.
+
+**1. Build gagal karena berkas yang tidak ada di repo.** `packages/script`
+membaca `.github/TEAM_MEMBERS` **saat import**, padahal daftar itu hanya dipakai
+perkakas rilis dan triase isu. Berkasnya tidak ada di repo dan tidak di-gitignore,
+jadi **setiap** build yang mengimpor modul itu gagal dengan ENOENT telanjang.
+Kini daftar yang tidak terbaca diperlakukan sebagai daftar kosong.
+
+**2. Versi backend tidak valid semver.** Script build upstream menurunkan versi
+dari nama branch git. Pada branch bergaris miring seperti
+`arena/01a0b5de-opencode`, hasilnya `0.0.0-arena/01a0b5de-opencode-2026...`.
+`script/backend.ts` kini menyematkan `OPENCODE_VERSION`/`OPENCODE_CHANNEL`,
+sehingga build tidak bergantung pada nama branch maupun registry npm.
+
+**Verifikasi — untuk pertama kalinya memakai executable hasil kompilasi nyata**
+(sebelumnya hanya shim yang menjalankan backend dari source):
+
+| Perintah                           | Hasil                                               |
+| ---------------------------------- | --------------------------------------------------- |
+| `bun run script/backend.ts`        | berhasil; smoke test lulus, versi `1.18.31-desktop` |
+| `bun run script/verify-backend.ts` | **8/8 lulus** terhadap binary `--compile`           |
+| `bun test src`                     | 84 pass / 0 fail                                    |
+| oxlint + prettier                  | bersih                                              |
+
+Ini menutup risiko yang dicatat di Tahap 1B bahwa executable mandiri belum diuji.
+Yang dikompilasi di sini `linux-x64`; jalur `windows-x64` masih perlu dijalankan
+di Windows karena `--single` hanya membangun untuk platform yang sedang berjalan.
+
+Catatan lingkungan: build memerlukan `https://models.dev/api.json`, yang diblokir
+di sandbox; dilewati dengan `MODELS_DEV_API_JSON`. `bun install` juga perlu
+`NODE_EXTRA_CA_CERTS`. Keduanya kendala sandbox, bukan cacat kode.
+
 **Langkah berikutnya**
 
 1. Kompilasi backend untuk `windows-x64` dan uji `script/backend.ts --target windows-x64`.
