@@ -4,9 +4,26 @@ Catatan kerja fork `Delta-Polder-Indonesia/opencode`. Sesi berjalan:
 `arena/01a0b0bc-opencode` (item 1–3, PR #3), `arena/01a0b171-opencode`
 (item 4a/gate 1, PR #4), `arena/01a0b189-opencode` (item 4a-lanjut/gate 3),
 lalu `arena/01a0b19d-opencode` (gate 3 lanjutan: auto-resume inbox),
-`arena/01a0b1cd-opencode` (stale-owner fencing), dan sekarang
-`arena/01a0b1b6-opencode` (item 4 final review).
+`arena/01a0b1cd-opencode` (stale-owner fencing), lalu
+`arena/01a0b1b6-opencode` (item 4 final review), dan sekarang
+`arena/01a0b221-opencode` (audit klaim catatan + rapikan dokumentasi perf).
 Ditulis ulang 2026-09-18 setelah slice item 4 selesai.
+
+Hasil audit `arena/01a0b221-opencode` (2026-09-18): seluruh 8 item di bawah
+terverifikasi ADA dan gate-nya dijalankan ulang di HEAD `9c3ad825c` —
+core `1148 pass / 0 fail`, typecheck `core`+`protocol`+`server`+`sdk/js` bersih,
+harness coverage `220/220`, harness effect `212 pass / 8 fail` tanpa katalog
+model dan **`220/220`** dengan `OPENCODE_MODELS_PATH`.
+
+Dua klaim dokumentasi ternyata keliru dan sudah diperbaiki:
+
+- **Item 8** menunjuk file perf yang salah (lihat koreksi di item 8).
+- **8 kegagalan mode `effect`** bukan "butuh provider/model eksternal" dan bukan
+  kondisi yang tak terhindarkan. Penyebab tunggalnya: sandbox tidak bisa
+  menjangkau `https://models.opencode.ai`. Sediakan katalog lokal dan
+  semuanya lolos — lihat koreksi di "Verifikasi final item 4" dan di bagian
+  batasan sandbox.
+
 Rencana induk: 5 perbaikan prioritas yang disepakati user (lihat
 `specs/v2/todo.md` dan dokumen per-fase di `specs/v2/`).
 
@@ -62,9 +79,13 @@ background-job.ts` yang hanya butuh `Database.Service`. Item 4 kemudian
      `session_id` (field opsional baru di `BackgroundJob.Info` — jalur
      model-facing tidak berubah karena `infoOutput` sudah whitelist).
    - SDK regen (`packages/sdk/js` → `openapi.json` + `src/v2/gen/*`).
-   - Harness: helper seed `ctx.jobs([...])` baru (`types.ts`/`runtime.ts`/
-     `runner.ts`) + 4 skenario (`v2.job.list`, `v2.job.list.session-filter`,
-     `v2.job.get`, `v2.job.get.missing`). Lock-test TODO di
+   - Harness: helper seed `ctx.jobs([...])` baru (didefinisikan di
+     `test/server/httpapi-exercise/` — `types.ts`/`runtime.ts`/`runner.ts`;
+     skenarionya sendiri di `index.ts`). Slice gate 3 menambah 4 skenario
+     (`v2.job.list`, `v2.job.list.session-filter`, `v2.job.get`,
+     `v2.job.get.missing`); item 4 menyusul menambah 2 skenario cancel
+     (`v2.job.cancel`, `v2.job.cancel.stale-owner`), sehingga totalnya 6.
+     Lock-test TODO di
      `tool-bash.test.ts` diperbarui sadar: entri gate job dihapus karena
      sudah selesai.
 
@@ -96,7 +117,14 @@ background-job.ts` yang hanya butuh `Database.Service`. Item 4 kemudian
    test/script menurunkan wall clock sekitar `38.8s` menjadi `~26.5s`
    (1140 test, 0 gagal); perubahan hanya pada fixture, contention tests, dan
    migration check paralelisasi. Temuan dan batasannya dicatat di
-   `perf/test-suite.md`.
+   **`perf/core-test-suite.md`**.
+   Koreksi (audit 2026-09-18): entri ini semula menunjuk `perf/test-suite.md`,
+   yang salah — file itu cakupannya `packages/opencode/test/**` dan tidak
+   pernah membahas core. Baseline `38.8s` / `1140` juga tidak tercatat di
+   file markdown mana pun; satu-satunya sumbernya adalah pesan commit
+   `5ee4b25f3`. Keduanya kini tertulis di `perf/core-test-suite.md` beserta
+   pengukuran ulang di HEAD `9c3ad825c`: **26.95s, 1148 pass, 0 fail**
+   (8 test tambahan muncul setelah optimasi mendarat).
 
 ## Status item #4 dan pinggiran
 
@@ -131,16 +159,34 @@ dari package app).
   `perf/test-suite.md`. The latest scoped server profile (`49` files, sequential) is recorded in
   `perf/test-suite.md`: slowest `test/server/httpapi-session.test.ts` at
   `12.944s` (`METRIC slowest_test_file_seconds=12.944`).
-- Effect route execution remains diagnostic-only: accepted completed run
-  `212 pass`, `8 fail`, `0 skip`, `missing=0`, `extra=0`. The eight known
-  diagnostics are `config.providers`, `provider.list`,
-  `v2.session.permission.create`, `session.init`, `session.prompt`,
-  `session.prompt_async`, `session.command`, and `session.summarize`; they
-  require provider/model-backed or legacy route behavior and are not the
-  coverage/auth contract gates. One diagnostic rerun timed out at 180 seconds
-  before buffered output; the requested retry with `--progress` completed in
-  `248.772s` and reproduced the same eight failures (with
-  `session.prompt_async` reaching its 30-second scenario timeout).
+- Effect route execution: without a reachable models catalog the run is
+  `212 pass`, `8 fail`, `0 skip`, `missing=0`, `extra=0`. The eight failures are
+  `config.providers`, `provider.list`, `v2.session.permission.create`,
+  `session.init`, `session.prompt`, `session.prompt_async`, `session.command`,
+  and `session.summarize`.
+  **Koreksi (audit 2026-09-18):** entri ini semula menyebut kedelapannya
+  "require provider/model-backed or legacy route behavior". Itu salah. Penyebab
+  tunggalnya adalah sandbox tidak bisa menjangkau
+  `https://models.opencode.ai/api.json`. Enam di antaranya 500 dengan
+  `HttpClientError: Transport error (GET https://models.opencode.ai/api.json)`
+  (dibuktikan dengan membocorkan `Cause.pretty` lewat middleware error sementara);
+  `session.prompt_async` menggantung >150 detik pada dependensi yang sama; dan
+  `v2.session.permission.create` menjawab `effect: "deny"` karena resolusi agent
+  gagal tanpa katalog, sehingga jatuh ke `missingAgentPermissions`
+  (`packages/core/src/permission.ts:144`).
+  Dengan katalog lokal, **kedelapannya lolos**:
+
+  ```sh
+  cd packages/opencode
+  OPENCODE_MODELS_PATH=test/tool/fixtures/models-api.json \
+    bun run script/httpapi-exercise.ts --mode effect
+  # summary pass=220 fail=0 skip=0 missing=0 extra=0  (147s)
+  ```
+
+  Fixture itu snapshot `api.json` asli (4.9MB, 159 provider) yang sudah ada di
+  tree. Urutan load `ModelsDev.populate` adalah disk → snapshot → fetch
+  (`packages/core/src/models-dev.ts:184`), jadi `OPENCODE_MODELS_PATH`
+  menghilangkan fetch sama sekali.
 - Repository-wide `bun run lint` still exits on a pre-existing octal-literal
   error in `packages/session-ui/src/v2/components/prompt-input/index.tsx`;
   changed-file lint had no errors (only existing warnings).
@@ -155,9 +201,15 @@ dari package app).
   Bukti kualitas yang dipakai: typecheck `packages/core` + `packages/
 protocol` + `packages/server` + `packages/sdk/js`, test suite, dan
   httpapi-exercise.
-- Mode `effect` pada harness httpapi-exercise punya 8 kegagalan
-  **pre-existing** (butuh provider/model eksternal) — terverifikasi gagal
-  identik di tree baseline; bukan regresi. (Mode coverage hijau penuh.)
+- Mode `effect` pada harness httpapi-exercise **bisa hijau penuh** di sandbox
+  ini, asal katalog model disediakan lokal. Kegagalan `212 pass / 8 fail` yang
+  sebelumnya dianggap "pre-existing / butuh provider eksternal" sebenarnya
+  akibat egress sandbox yang memblokir `https://models.opencode.ai`
+  (`curl` gagal `SSL_ERROR_SYSCALL` bahkan dengan `-k`, jadi bukan soal
+  sertifikat). Solusinya:
+  `OPENCODE_MODELS_PATH=test/tool/fixtures/models-api.json` → `220/220 pass`.
+  Jangan warisi asumsi lama bahwa delapan kegagalan itu tak terhindarkan.
+  (Mode coverage hijau penuh dengan atau tanpa env ini.)
 - Jangan jalankan pekerjaan berat bersamaan (dua tsgo/test suite sekaligus
   membuat sandbox nyaris lumpuh ±10 menit).
 - Sandbox bisa **kehilangan toolchain bun + node_modules** antar sesi:

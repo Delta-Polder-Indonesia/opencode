@@ -4,6 +4,9 @@ The normative test-suite performance contract is `specs/perf/test-suite.md`.
 This file keeps measured baselines, hypothesis results, and discarded
 experiments rather than repeating the contract.
 
+Scope: this log covers the `packages/opencode` suite only. Measured baselines
+for the `packages/core` suite live in `perf/core-test-suite.md`.
+
 ## Goal
 
 Speed up the `packages/opencode` test suite without reducing coverage or hiding failures.
