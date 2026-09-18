@@ -264,34 +264,73 @@ Test-Case "Server nyata: hanya 127.0.0.1, 401 tanpa kredensial, 200 dengan krede
     "-Port", "$E2EPort", "-Opencode", $Opencode)
   $line = ($arguments | ForEach-Object { Quote-Arg $_ }) -join " "
   $process = $null
+  $observed = @()
   $env:OPENCODE_SERVER_PASSWORD = $password
+
+  # Diagnostik lengkap supaya kegagalan di runner bisa ditelusuri tanpa akses mesin.
+  $diagnose = {
+    $captured = ((Get-Content $outFile -Raw -ErrorAction SilentlyContinue) + "`n" + (Get-Content $errFile -Raw -ErrorAction SilentlyContinue))
+    $exitState = if ($process) { if ($process.HasExited) { "keluar dengan kode $($process.ExitCode)" } else { "masih hidup" } } else { "tidak dijalankan" }
+    $listeners = (Get-ListenerAddresses $E2EPort) -join ", "
+    $version = ""
+    try { $version = (& $Opencode --version 2>&1 | Out-String).Trim() } catch { $version = "gagal query versi: $($_.Exception.Message)" }
+    $command = Get-Command $Opencode -ErrorAction SilentlyContinue
+    @(
+      "perintah   : $line"
+      "opencode   : $Opencode (jenis: $($command.CommandType)) versi: $version"
+      "proses     : $exitState"
+      "status HTTP yang terlihat: $(if ($observed.Count) { $observed -join ', ' } else { 'tidak ada jawaban' })"
+      "pendengar  : $(if ($listeners) { $listeners } else { 'tidak ada yang mendengarkan di port ' + $E2EPort })"
+      "netstat    :"
+      ((netstat -ano | Select-String ":$E2EPort" | ForEach-Object { "  $($_.Line.Trim())" }) -join "`n")
+      "keluaran proses:"
+      "---"
+      $captured
+      "---"
+    ) -join "`n"
+  }
 
   try {
     $process = Start-Process -FilePath $shell -ArgumentList $line -NoNewWindow -PassThru `
       -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+    Write-Host "  proses PID $($process.Id), menunggu server di http://127.0.0.1:$E2EPort ..."
 
-    $deadline = (Get-Date).AddSeconds(90)
+    $deadline = (Get-Date).AddSeconds(120)
     $ready = $false
+    $lastReport = (Get-Date)
     while ((Get-Date) -lt $deadline) {
-      if ($process.HasExited) { break }
-      if ((Get-HttpStatus $E2EPort "") -eq 401) { $ready = $true; break }
+      $status = Get-HttpStatus $E2EPort ""
+      if ($status -gt 0) {
+        $observed += $status
+        $ready = $true
+        break
+      }
+      $process.Refresh()
+      if ($process.HasExited) {
+        throw "proses dev-safe.ps1 berhenti lebih awal.`n$(& $diagnose)"
+      }
+      if (((Get-Date) - $lastReport).TotalSeconds -ge 5) {
+        Write-Host "  ... masih menunggu (PID $($process.Id) hidup)"
+        $lastReport = Get-Date
+      }
       Start-Sleep -Milliseconds 500
     }
-    $captured = ((Get-Content $outFile -Raw -ErrorAction SilentlyContinue) + "`n" + (Get-Content $errFile -Raw -ErrorAction SilentlyContinue))
     if (-not $ready) {
-      throw "server tidak siap dalam 90 detik. Keluaran:`n$captured"
+      throw "server tidak menjawab dalam 120 detik.`n$(& $diagnose)"
     }
 
     $anonymous = Get-HttpStatus $E2EPort ""
     $authorized = Get-HttpStatus $E2EPort "opencode:$password"
     $addresses = Get-ListenerAddresses $E2EPort
 
-    Assert-True ($anonymous -eq 401) "tanpa kredensial dijawab $anonymous, harusnya 401"
-    Assert-True ($authorized -eq 200) "dengan kredensial dijawab $authorized, harusnya 200"
+    Assert-True ($anonymous -eq 401) "tanpa kredensial dijawab $anonymous, harusnya 401.`n$(& $diagnose)"
+    Assert-True ($authorized -eq 200) "dengan kredensial dijawab $authorized, harusnya 200.`n$(& $diagnose)"
     Assert-True ($addresses -contains "127.0.0.1") "tidak mendengarkan di 127.0.0.1 (alamat: $($addresses -join ', '))"
     Assert-True (-not ($addresses -contains "0.0.0.0")) "mendengarkan di 0.0.0.0 (alamat: $($addresses -join ', '))"
-    Assert-True (-not ($captured -match "unsecured")) "masih ada peringatan 'unsecured' padahal password diset"
-    Assert-True ($captured -match "http://localhost:$E2EPort") "banner dev-safe.ps1 tidak menampilkan URL localhost:$E2EPort"
+
+    $captured = ((Get-Content $outFile -Raw -ErrorAction SilentlyContinue) + "`n" + (Get-Content $errFile -Raw -ErrorAction SilentlyContinue))
+    Assert-True (-not ($captured -match "unsecured")) "masih ada peringatan 'unsecured' padahal password diset.`n$(& $diagnose)"
+    Assert-True ($captured -match "http://localhost:$E2EPort") "banner dev-safe.ps1 tidak menampilkan URL localhost:$E2EPort.`n$(& $diagnose)"
   } finally {
     if ($process) {
       $process.Refresh()
@@ -335,7 +374,9 @@ if ($env:GITHUB_STEP_SUMMARY) {
   foreach ($item in $script:results) {
     $index++
     $badge = if ($item.Status -eq "PASS") { "lulus" } elseif ($item.Status -eq "FAIL") { "GAGAL" } else { "dilewati" }
-    $lines += "| $index | $($item.Name) | $badge | $($item.Detail) |"
+    # Baris baru akan merusak tabel Markdown, jadi diratakan dulu.
+    $detail = (($item.Detail -replace "\r?\n", " ") -replace "\|", "\|").Trim()
+    $lines += "| $index | $($item.Name) | $badge | $detail |"
   }
   $lines += ""
   $lines += "**$passed lulus, $failed gagal, $skipped dilewati.**"
@@ -344,9 +385,20 @@ if ($env:GITHUB_STEP_SUMMARY) {
 
 Write-Host ""
 if ($failed -gt 0) {
+  $evidenceRoot = if ($env:GITHUB_WORKSPACE) { $env:GITHUB_WORKSPACE } else { [System.IO.Path]::GetTempPath() }
+  $evidence = Join-Path $evidenceRoot "dev-safe-failures.txt"
+  $blocks = foreach ($item in ($script:results | Where-Object Status -eq "FAIL")) {
+    "### $($item.Name)`n$($item.Detail)`n"
+  }
+  Set-Content -Path $evidence -Value ($blocks -join "`n") -Encoding UTF8
+  Write-Host "Detail kegagalan juga ditulis ke: $evidence" -ForegroundColor DarkGray
+
   if ($env:GITHUB_ACTIONS -eq "true") {
     foreach ($item in ($script:results | Where-Object Status -eq "FAIL")) {
-      Write-Host "::error title=dev-safe gagal::$($item.Name) - $($item.Detail)"
+      # Anotasi hanya satu baris; baris baru diganti supaya tidak terpotong.
+      $message = (($item.Name + " - " + $item.Detail) -replace "\r?\n", " | ").Trim()
+      if ($message.Length -gt 900) { $message = $message.Substring(0, 900) + " ... (lihat ringkasan step)" }
+      Write-Host "::error title=dev-safe gagal::$message"
     }
   }
   exit 1

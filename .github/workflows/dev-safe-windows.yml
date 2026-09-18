@@ -87,6 +87,49 @@ jobs:
           & pwsh @arguments
           exit $LASTEXITCODE
 
+      - name: Diagnostik kalau uji gagal
+        if: failure()
+        env:
+          E2E_PORT: "42999"
+        run: |
+          Write-Host "== Versi opencode =="
+          $command = Get-Command opencode -ErrorAction SilentlyContinue
+          if ($command) {
+            Write-Host "path: $($command.Source) ($($command.CommandType))"
+            & opencode --version 2>&1 | ForEach-Object { Write-Host $_ }
+          } else {
+            Write-Host "opencode tidak ada di PATH"
+          }
+
+          Write-Host "== netstat port $env:E2E_PORT =="
+          netstat -ano | Select-String ":$env:E2E_PORT" | ForEach-Object { Write-Host $_.Line.Trim() }
+
+          Write-Host "== Coba jalankan server langsung (20 detik, tanpa dev-safe.ps1) =="
+          $outFile = Join-Path $env:RUNNER_TEMP "direct-serve.out"
+          $errFile = Join-Path $env:RUNNER_TEMP "direct-serve.err"
+          $env:OPENCODE_SERVER_PASSWORD = "ci-diagnostic"
+          $process = Start-Process -FilePath "opencode" -ArgumentList @("serve", "--port", $env:E2E_PORT, "--hostname", "127.0.0.1") `
+            -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+          Start-Sleep -Seconds 20
+          $process.Refresh()
+          if ($process.HasExited) { Write-Host "server langsung sudah keluar, kode $($process.ExitCode)" }
+          else { Write-Host "server langsung masih hidup setelah 20 detik"; & taskkill /PID $process.Id /T /F 2>&1 | Out-Null }
+          Write-Host "-- stdout --"
+          Get-Content $outFile -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+          Write-Host "-- stderr --"
+          Get-Content $errFile -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+          Write-Host "== netstat setelah percobaan =="
+          netstat -ano | Select-String ":$env:E2E_PORT" | ForEach-Object { Write-Host $_.Line.Trim() }
+
+      - name: Lampirkan bukti kegagalan
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-safe-failures
+          path: dev-safe-failures.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Ringkasan hasil
         if: always()
         run: |
