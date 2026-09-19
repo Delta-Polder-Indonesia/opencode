@@ -180,7 +180,7 @@ export function terminalFontFamily(font: string | undefined) {
   return stack(font, terminalBase)
 }
 
-const defaultSettings: Settings = {
+export const defaultSettings: Settings = {
   general: {
     autoSave: true,
     releaseNotes: true,
@@ -190,7 +190,11 @@ const defaultSettings: Settings = {
     showSearch: false,
     showStatus: false,
     showTerminal: false,
-    showReasoningSummaries: false,
+    // Reasoning text must exist as a collapsible part (folded while streaming,
+    // auto-collapsed when it ends, reopenable later) rather than being absent
+    // from the timeline entirely -- otherwise a thinking model shows nothing
+    // but a shimmer for most of the turn.
+    showReasoningSummaries: true,
     shellToolPartsExpanded: false,
     editToolPartsExpanded: false,
     showCustomAgents: false,

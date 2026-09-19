@@ -897,6 +897,45 @@ installer dari branch ini (`git pull` dulu, lalu `bun run package:win` atau
 
 ---
 
+#### 2026-09-19 — Diagnosa "jawaban tidak terlihat saat AI menjawab" + default thinking jadi lipatan
+
+Laporan pengguna setelah installer jalan: saat AI menjawab, teks jawabannya tidak
+kelihatan; diinginkan (1) teks percakapan selalu tampil, (2) teks "sedang
+berpikir" bisa dibuka-tutup, (3) teks "mencari berkas" bisa dibuka-tutup, (4)
+output terminal panjang bisa dilipat, bukan dihapus.
+
+**Diagnosa (empiris, bukan tebakan).** Backend dijalankan sungguhan di sandbox
+dengan model palsu lokal (OpenAI-compatible yang meng-stream reasoning lalu
+jawaban kata demi kata). Urutan event yang diterima UI terekam lengkap:
+`message.part.updated reasoning` → `message.part.delta` reasoning per fragmen →
+`message.part.updated text` → **`message.part.delta field=text part=text`
+mengalir live** → snapshot akhir. Artinya sisi server streaming benar. Sisi UI
+juga diperiksa per lapisan: reducer `message.part.delta` menambahkan teks ke
+part secara live; `TextPartDisplay` selalu merender jawaban tanpa lipatan
+(pacing 24ms); timeline mengikuti ke bawah (`anchorTo: "end"`,
+`followOnAppend: true`); kartu tool (grep/glob/read/list) dikelompokkan sebagai
+`ContextToolGroup` yang bisa dibuka-tutup; kartu bash/terminal bisa dilipat dan
+outputnya terpagasi (`max-height: 240px` + scroll internal).
+
+**Celah yang ditemukan dan diperbaiki.** `showReasoningSummaries` default
+`false`: teks reasoning **tidak dirender sama sekali** — model yang berpikir
+lama hanya menampilkan shimmer "Thinking" yang tidak bisa dibuka, persis
+keluhan "tidak kelihatan sedang menjawab apa". Default kini `true`: teks
+thinking tersedia sebagai lipatan — tertutup saat streaming, otomatis tertutup
+saat selesai, bisa dibuka ulang kapan pun (`createReasoningDisclosure` yang
+sudah ada). Pengaturan lama di Settings tetap dihormati bila pernah diubah.
+
+**Verifikasi:** event flow direkam dari backend nyata (di atas); `packages/app`
+**725 pass / 0 fail** (1 tes regresi baru untuk default); `session-ui` 83 pass /
+0 fail; typecheck bersih.
+
+**Belum bisa dipastikan dari sini:** bila provider/model pengguna mem-buffer
+seluruh jawaban (tanpa delta) atau menaruh jawaban di reasoning, UI tidak punya
+teks untuk ditampilkan sebelum selesai — perlu dikonfirmasi model apa yang
+dipakai dan apakah jawaban baru muncul di akhir giliran.
+
+---
+
 ## Arsip catatan teknis sebelumnya
 
 Bagian di bawah dipertahankan sebagai riwayat. Status dan hasil pengujian di
