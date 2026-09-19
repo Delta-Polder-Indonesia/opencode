@@ -1396,3 +1396,47 @@ bukan regresi kode; resolusi kondisi modul. Jalankan **`bun run test:unit`**
 
 **Status**: BELUM terverifikasi di Windows nyata — menunggu user uji ulang
 (dev mode, bukan installer).
+
+## KOREKSI (2026-09-19, commit 45288d5): deteksi v2 = regresi; jalur v1 terbukti sehat
+
+**Koreksi atas kesimpulan sebelumnya**: pengamatan "event /global/event tanpa
+directory" TERNYATA keliru — frame yang dulu ditangkap hanyalah frame sintetis
+`server.connected` buatan handler (memang tanpa directory). Event bus sungguhan
+TERBUKTI membawa `directory` level-atas (57 frame ber-directory dalam satu capture;
+`message.updated`, `message.part.updated`, `session.status` semua dengan directory).
+`event-v2-bridge.ts` selalu menempelkan `directory: event.location?.directory ?? ctx?.directory`.
+
+**Regresi 460ffd6**: mengubah deteksi agar /api/health apa pun → v2 membuat UI
+memakai jalur v2 penuh di backend fork, padahal:
+- `GET/POST /api/session/{sessionID}/model` → **500 bodi kosong** (tidak diimplementasi
+  di instance httpapi fork; endpoint memang terdaftar di packages/protocol/src/groups/session.ts
+  tapi handler-nya tidak ada — daftar handler legacy di handlers/session.ts tidak punya "model").
+- Compat layer (packages/app/src/utils/server-compat.ts) hanya memetakan input prompt
+  untuk jalur v1; jalur v2 pass-through mentah — input merged (text/legacyParts/files/agents)
+  tidak dipetakan ke body v2 `{prompt:{text,files,agents}}` → prompt v2 rusak.
+- Loop agen v2 (POST /api/session/{id}/prompt) memakai kosakata event baru
+  (`session.next.*`) dan memilih model DEFAULT server (bukan model UI) →
+  bukan jalur yang siap untuk desktop fork.
+
+**Tindakan**: commit 45288d5 mengembalikan server-protocol.ts ke logika lama
+(/global/health healthy → v1; /api/health {pid} → v2; transitional → v1).
+Normalisasi adaptServerEvent (properties→data) DIPERTAHANKAN (no-op untuk server
+v2 spec-compliant). Suite: app 727/0, typecheck bersih.
+
+**Verifikasi end-to-end jalur v1 (empiris, backend hidup)**:
+- POST /session/{id}/message (legacy, dengan model+parts) → 200 → stream
+  /global/event mengirim: message.updated (user) → message.part.updated (part user)
+  → session.status busy → message.updated (asisten, parentID=user) → …
+  semua frame `data: {"directory":"<dir>","project":…,"payload":{id,type,properties}}`.
+- SDK v2 `sse.get("/global/event")` meng-yield frame JSON mentah (runtime `yield data`),
+  tipe `GlobalEvent={directory,payload}` — cocok dengan ekspektasi UI
+  (`"payload" in event`, `event.directory`).
+
+**JANGAN mengubah deteksi ke v2 untuk backend hybrid sebelum**: (1) handler
+`session.getModel`/`switchModel` diimplementasi di fork, (2) compat layer v2
+memetakan body prompt, (3) loop v2 memakai model sesi UI.
+
+**Arsitektur event yang benar untuk diingat**:
+- SSE heartbeat/connected dari handler global memang tanpa directory → bucket "global" (diabaikan reducer).
+- Heartbeat handler global: 10 detik; /api/event (v2): 15 detik + `: heartbeat` comment.
+- `StreamEvent` SDK: `{data,event?,id?,retry?}` — yang di-yield ke consumer adalah `data`-nya saja.
