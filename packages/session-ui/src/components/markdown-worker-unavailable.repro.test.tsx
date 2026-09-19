@@ -1,5 +1,22 @@
 import { test, expect, mock } from "bun:test"
-import { GlobalRegistrator } from "@happy-dom/global-registrator"
+
+// The happy-dom registrator is a declared devDependency of this package. If
+// it cannot be loaded, the checkout most likely predates a `bun install`
+// after pulling this branch — fail with an actionable message instead of a
+// bare "Cannot find module" when the file is loaded.
+let GlobalRegistrator: typeof import("@happy-dom/global-registrator").GlobalRegistrator
+try {
+  GlobalRegistrator = (await import("@happy-dom/global-registrator")).GlobalRegistrator
+} catch {
+  throw new Error(
+    [
+      "Cannot load @happy-dom/global-registrator (declared devDependency of packages/session-ui).",
+      "Run `bun install` at the repository root, then re-run:",
+      "  cd packages/session-ui",
+      "  bun test --conditions=browser src/components/markdown-worker-unavailable.repro.test.tsx",
+    ].join("\n"),
+  )
+}
 
 if (!(globalThis as any).__happyDomRegistered) {
   GlobalRegistrator.register()
