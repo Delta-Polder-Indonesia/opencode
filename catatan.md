@@ -1574,13 +1574,18 @@ aktif.
 → UI mati di SessionRouteErrorBoundary session.tsx:168. Data di store SEHAT
 (streaming-answer.test.ts + test BASELINE).
 
-**Opsi fix (tahap berikutnya, BELUM diimplementasikan):** (1, disarankan)
-fallback sinkron di jalur streaming saat resource error — pakai
-`pendingProjection(text)` (teks escaped seperti jalur statis); (2) recovery
-worker (reset `disabled`) untuk kegagalan transien; (3) perbaikan aset worker
-di packaged hanya jika console menunjuk kegagalan load; (4) CSP hanya jika
-terbukti violation. Test regresinya sudah ada (file repro; opsi 1 mengubah
-klaim REPRO 3-6 dari "melempar" menjadi "teks tetap tampil").
+**Opsi fix — (1) SUDAH diimplementasikan di PR #17 (branch
+`arena/01a0b9f3-opencode`, commit 7321112):** fallback sinkron di jalur
+streaming saat resource error — `markdown.tsx` cek `projectionValue.error`
+dulu lalu pakai `pendingProjection(text)`; `.catch` loader html yang sudah ada
+menyelesaikan ke teks escaped (persis jalur statis). Jalur sehat tak berubah;
+satu `console.warn` sekali-per-process menandai fallback. Test regresi:
+`markdown-worker-unavailable.repro.test.tsx` (7/7; 2 baseline + 4 regression
++ 1 kontrol; suite session-ui 90/90, app 727/727, tsgo bersih; juga lulus di
+mesin Windows user, bun 1.4.2). Opsi tersisa bila perlu: (2) recovery worker
+(reset `disabled`) untuk kegagalan transien; (3) perbaikan aset worker di
+packaged hanya jika console menunjuk kegagalan load; (4) CSP hanya jika
+terbukti violation.
 
 **Probe:** `diagnosis-probe/markdown-worker-file-probe.html` (+ `.worker.js`) —
 buka dari disk di Chrome untuk melihat SecurityError `file://` verbatim +
