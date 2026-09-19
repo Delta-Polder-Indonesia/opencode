@@ -1470,3 +1470,29 @@ blurred). +2 tes (focused suppress / blurred show). Suite desktop 113/0.
 **Menggantung**: kenapa title generation gagal dengan model router user — butuh
 desktop.log (cari "failed to generate title"). Judul default akan tetap muncul di
 notifikasi saat window blurred sampai title berhasil dibuat sekali.
+
+## desktop.log user (2026-09-19): dua temuan + lokasi log server
+
+**Log dibaca dari**: `%APPDATA%\@opencode-ai\desktop\logs\desktop.log`
+(`app.getPath("logs")` — subfolder `logs`, BUKAN langsung `%APPDATA%\OpenCode`).
+Catatan: log ini berisi console renderer + main process; **log backend/server
+TIDAK ada di sini**.
+
+**Temuan 1 — CSP memblokir WASM (fixed, commit ini)**: berulang kali
+`CompileError: WebAssembly.instantiate() ... script-src 'self' 'unsafe-inline'`
+dari `oc://renderer/assets/wasm-*.js`. `packages/desktop/index.html` tidak punya
+`'wasm-unsafe-eval'` di script-src. Fix: tambah `'wasm-unsafe-eval'` (pola sama
+dengan CSP UI server di packages/opencode/src/server/shared/ui.ts yang sudah
+memilikinya; `unsafe-eval` penuh TETAP dilarang). +tes yang mengunci CSP.
+Gejala yang dihilangkan: modul wasm renderer (grammar/syntax) gagal load.
+
+**Temuan 2 — "Failed to create terminal"**: error asli dari SERVER
+("Unexpected server error. Check server logs for details.") — UI hanya
+melemparkan ulang (server-compat.ts `pty.create`, terminal.tsx:356).
+Perlu log server: `~\.local\share\opencode\log\` (Global.Path.log, packages/core/
+src/global.ts; file: opencode.log) untuk lihat stack PTY di Windows.
+
+**Log server di Windows**: `C:\Users\<user>\.local\share\opencode\log\opencode.log`
+(xdg-basedir → HOME/.local/share). Di sinilah jejak "failed to generate title"
+(Effect.logError di packages/opencode/src/session/prompt.ts) dan error PTY
+akan terlihat.

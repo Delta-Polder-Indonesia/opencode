@@ -206,6 +206,18 @@ describe("main window security", () => {
     handler({ url: "file:///etc/passwd" })
     expect(externalOpens.length).toBe(before)
   })
+
+  test("renderer CSP allows WebAssembly but not eval", () => {
+    // The renderer bundles wasm modules (e.g. tree-sitter grammars); without
+    // 'wasm-unsafe-eval' they throw CompileErrors at runtime. Full 'unsafe-eval'
+    // must stay out — the server UI CSP (packages/opencode/src/server/shared/ui.ts)
+    // follows the same pattern.
+    const html = readFileSync(join(__dirname, "..", "..", "index.html"), "utf8")
+    const csp = /content="([^"]+)"/.exec(html)![1]
+    expect(csp).toContain("script-src")
+    expect(csp).toContain("'wasm-unsafe-eval'")
+    expect(csp).not.toMatch(/'unsafe-eval'/)
+  })
 })
 
 describe("main ipc handlers", () => {
