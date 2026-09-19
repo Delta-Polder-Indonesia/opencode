@@ -5,6 +5,12 @@
   "type": "module",
   "description": "OpenCode desktop shell (Electron)",
   "license": "MIT",
+  "author": "OpenCode contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Delta-Polder-Indonesia/opencode.git",
+    "directory": "packages/desktop"
+  },
   "main": "dist/main/index.cjs",
   "scripts": {
     "typecheck": "tsgo --noEmit",
@@ -14,22 +20,20 @@
     "build:renderer": "vite build --config vite.renderer.config.ts",
     "build:backend": "bun run script/backend.ts",
     "start": "electron dist/main/index.cjs",
-    "package:win": "bun run script/backend.ts --target windows-x64 && bun run script/build.ts && electron-builder --win --x64"
+    "package:win": "bun run script/package.ts"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "20.12.0",
+    "@opencode-ai/app": "workspace:*",
     "@tsconfig/node22": "catalog:",
     "@types/bun": "catalog:",
     "@types/node": "catalog:",
     "@typescript/native-preview": "catalog:",
     "electron": "44.4.0",
     "electron-builder": "26.15.3",
-    "typescript": "catalog:",
-    "vite": "catalog:"
-  },
-  "dependencies": {
-    "@opencode-ai/app": "workspace:*",
     "solid-js": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
     "zod": "catalog:"
   }
 }

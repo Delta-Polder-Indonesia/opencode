@@ -30,6 +30,24 @@ describe("adaptServerEvent", () => {
       current,
     })
   })
+
+  test("normalizes legacy `properties`-encoded events so the payload reaches every consumer", async () => {
+    // Servers exposing the v2 API over the legacy instance transport encode
+    // the payload under `properties` (see GET /event), not `data`.
+    const event = {
+      id: "evt_2",
+      type: "message.updated",
+      properties: { info: { id: "msg_1", sessionID: "ses_1", role: "assistant" }, parts: [] },
+    } as unknown as OpenCodeEvent
+
+    const adapted = adaptServerEvent(event)
+    expect(adapted).toMatchObject({
+      type: "message.updated",
+      properties: { info: { id: "msg_1", sessionID: "ses_1", role: "assistant" }, parts: [] },
+    })
+    // applyV2 reads the payload from `current.data`.
+    expect((adapted.current as OpenCodeEvent).data).toMatchObject({ info: { id: "msg_1" } })
+  })
 })
 
 describe("coalesceServerEvents", () => {

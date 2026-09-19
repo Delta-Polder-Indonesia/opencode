@@ -40,14 +40,14 @@ bun --version
 
 ## Bagian 1 — Ambil branch-nya
 
-Branch: **`arena/01a0b5de-opencode`** (ini isi [PR #15](https://github.com/Delta-Polder-Indonesia/opencode/pull/15)).
+Branch: **`arena/01a0b6f2-opencode`** (sesi kerja Tahap 1D).
 
 ### Kalau Anda BELUM punya repo-nya di mesin ini
 
 ```powershell
 git clone https://github.com/Delta-Polder-Indonesia/opencode.git
 cd opencode
-git checkout arena/01a0b5de-opencode
+git checkout arena/01a0b6f2-opencode
 ```
 
 ### Kalau Anda SUDAH punya repo-nya
@@ -59,8 +59,8 @@ cd path\ke\opencode
 git status
 
 git fetch origin
-git checkout arena/01a0b5de-opencode
-git pull origin arena/01a0b5de-opencode
+git checkout arena/01a0b6f2-opencode
+git pull origin arena/01a0b6f2-opencode
 ```
 
 Pastikan Anda berada di commit yang benar:
@@ -69,13 +69,9 @@ Pastikan Anda berada di commit yang benar:
 git log --oneline -3
 ```
 
-Yang diharapkan muncul paling atas:
-
-```
-c5456dd feat(desktop): start and supervise the local backend (stage 1B)
-6c3d1c2 feat(desktop): add Electron shell reusing the app UI (stage 1A)
-abc2353 feat(app): browse project folders and collapse reasoning; plan desktop IDE (#14)
-```
+Commit teratas harusnya berisi Tahap 1D (script `packages/desktop/script/package.ts`,
+ikon `packages/desktop/build/`, dan perubahan `electron-builder.yml`). Kalau tidak
+ada, `git pull` dulu sampai ulang.
 
 ---
 
@@ -207,26 +203,58 @@ pernah dijalankan sungguhan** — di situlah bug paling mungkin muncul.
 
 ---
 
-## Bagian 5 — Membuat installer (Tahap 1D, belum tervalidasi)
+## Bagian 5 — Membuat installer (Tahap 1D)
 
 ```powershell
 cd packages\desktop
 bun run package:win
 ```
 
-Perintah ini menjalankan tiga hal berurutan: kompilasi backend, build bundle
-desktop, lalu `electron-builder --win --x64`. Hasilnya ada di
-`packages\desktop\release\` sebagai installer NSIS.
+Satu perintah menjalankan tiga hal berurutan (script `script/package.ts`):
+kompilasi backend, build bundel desktop, lalu `electron-builder --win --x64`.
+Hasilnya ada di `packages\desktop\release\` sebagai installer NSIS
+(`OpenCode-1.18.31-win-x64.exe`).
+
+**Yang sudah divalidasi sebelum perintah ini dicoba** (2026-09-19, lihat
+`catatan.md`): alur `script/package.ts` dijalankan utuh di sandbox Linux dengan
+`--linux --dir` — konfigurasi electron-builder diterima, asar 36 MB berisi
+`dist/` lengkap tanpa `node_modules`, backend masuk `resources/backend` di luar
+asar, dan electron fuses diterapkan. Yang **belum** pernah terjadi: build NSIS
+itu sendiri dan artefak `OpenCode-*.exe` — keduanya hanya bisa dibuat di
+Windows (kompilasi backend lintas-platform tidak didukung).
+
+**Opsi yang tersedia** (`bun run script/package.ts <opsi>`):
+
+| Opsi             | Arti                                                       |
+| ---------------- | ---------------------------------------------------------- |
+| `--skip-backend` | pakai `resources\backend\opencode.exe` yang sudah ada      |
+| `--skip-bundle`  | pakai `dist\` yang sudah ada                               |
+| `--dir`          | tanpa installer NSIS — folder `release\win-unpacked\` saja |
+
+Contoh cepat mencoba hasil akhir tanpa NSIS:
+`bun run script/package.ts --dir` lalu jalankan
+`release\win-unpacked\OpenCode.exe`.
 
 **Harap dibaca sebelum mencoba:**
 
-- Ini **belum pernah dijalankan sekalipun**. Anggap sebagai percobaan pertama,
-  bukan sebagai proses rilis yang sudah terbukti.
-- Installer **tidak ditandatangani** (belum ada code signing). Windows SmartScreen
-  akan memperingatkan saat dibuka. Jangan sebarkan ke orang lain dulu.
-- Kalau gagal, kirimkan saya output error-nya — kemungkinan besar masalah
-  konfigurasi `electron-builder`, dan itu memang pekerjaan Tahap 1D yang belum
-  dimulai.
+- Installer **tidak ditandatangani** (belum ada code signing). Windows
+  SmartScreen akan memperingatkan saat dibuka: klik _More info_ → _Run anyway_.
+  Jangan sebarkan ke orang lain dulu.
+- Build pertama mengunduh Electron 44.4.0 untuk packaging dari GitHub release.
+  Kalau jaringan memblokirnya:
+
+  ```powershell
+  $env:ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
+  $env:ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
+  bun run package:win
+  ```
+
+- Script sengaja **menolak jalan di luar Windows** (diuji): installer yang
+  membawa binary backend platform yang salah akan rusak secara diam-diam.
+
+**Kalau gagal**, kirimkan output error-nya. Kemungkinan besar masalah
+konfigurasi `electron-builder`, dan itu pekerjaan Tahap 1D yang memang baru
+pertama kali dijalankan di Windows.
 
 ---
 
@@ -278,25 +306,30 @@ di-cache. Batas tunggu launcher kini 5 menit agar tidak menyerah lebih dulu.
 
 **Jendela terbuka tapi putih/kosong**
 
-Sudah diperbaiki sebagian: `git pull` lalu ulangi. Sebelumnya beberapa jalur
-kegagalan berakhir dengan dokumen kosong tanpa jejak apa pun. Sekarang jendela
-akan menampilkan panel berisi alasannya, dan error renderer juga ditulis ke log
-main process.
+Sudah diperbaiki dua putaran — `git pull` lalu ulangi:
 
-Kalau masih putih, jalankan dengan DevTools terbuka untuk melihat error aslinya:
+1. **Putaran pertama (mode dev)** — beberapa jalur kegagalan berakhir tanpa
+   jejak. Sekarang jendela menampilkan panel diagnostik, error renderer masuk
+   log main process, dan DevTools bisa dinyalakan dengan
+   `OPENCODE_DESKTOP_DEVTOOLS=1`.
+2. **Putaran kedua (aplikasi ter-install)** — di installer, renderer dimuat
+   dari berkas lokal. Entry renderer adalah ES module, dan module script
+   butuh CORS; `file://` ber-origin opaque sehingga script entry diblokir —
+   jendela putih tanpa pesan, padahal mode dev hijau (renderer dari server
+   Vite). Kini renderer dikemas dan dimuat lewat skema `oc://renderer`
+   (standard + secure), origin yang memang sudah diizinkan backend. Uji
+   regresinya: `bun test src` di `packages/desktop`.
+
+Kalau masih putih setelah `git pull` dan build ulang:
 
 ```powershell
 $env:OPENCODE_DESKTOP_DEVTOOLS="1"
-bun run dev
+bun run dev            # mode dev, atau jalankan OpenCode.exe ter-install dari terminal yang sama
 ```
 
-Lihat juga berkas log; jalurnya dicetak saat startup, biasanya:
-
-```
-%APPDATA%\OpenCode\desktop.log
-```
-
-Baris berawalan `[renderer]` adalah error dari dalam UI.
+DevTools akan terbuka; error merah di tab Console adalah penyebabnya. Kirim
+juga isi berkas log (`%APPDATA%\OpenCode\desktop.log`) — baris berawalan
+`[renderer]` adalah error dari dalam UI.
 
 **Aplikasi menggantung di layar loading**
 
@@ -334,6 +367,7 @@ cd packages\desktop
 bun run build:backend
 bun run dev
 
-# 4. installer (percobaan pertama, belum tervalidasi)
+# 4. installer (pipeline tervalidasi; artefak pertama di Windows)
+cd packages\desktop
 bun run package:win
 ```

@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, mock, test } from "bun:test"
-import { mkdtempSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { IPC } from "../shared/ipc"
@@ -17,9 +17,13 @@ const handlers = new Map<string, Handler>()
 const windows: Array<{ options: Record<string, any>; webContents: any }> = []
 const externalOpens: string[] = []
 const dataDir = mkdtempSync(join(tmpdir(), "opencode-desktop-main-"))
+const shownNotifications: Array<{ title: string; body: string }> = []
 
 let readyResolve: () => void
 const ready = new Promise<void>((resolve) => (readyResolve = resolve))
+
+const registeredSchemes: Array<{ scheme: string; privileges: Record<string, unknown> }> = []
+const handledProtocols = new Map<string, (request: { url: string }) => unknown>()
 
 class FakeWebContents {
   listeners = new Map<string, Function>()
@@ -42,9 +46,13 @@ class FakeBrowserWindow {
   static instances: FakeBrowserWindow[] = []
   webContents = new FakeWebContents()
   destroyed = false
+  focused = false
   constructor(public options: Record<string, any>) {
     FakeBrowserWindow.instances.push(this)
     windows.push({ options, webContents: this.webContents })
+  }
+  isFocused() {
+    return this.focused
   }
   static fromWebContents(contents: unknown) {
     return FakeBrowserWindow.instances.find((window) => window.webContents === contents)
@@ -99,11 +107,25 @@ beforeAll(async () => {
     nativeTheme: { shouldUseDarkColors: false },
     Notification: Object.assign(
       class {
+        options: { title: string; body: string }
+        constructor(options: { title: string; body?: string }) {
+          this.options = { title: options.title, body: options.body ?? "" }
+          shownNotifications.push(this.options)
+        }
         on() {}
         show() {}
       },
-      { isSupported: () => false },
+      { isSupported: () => true },
     ),
+    protocol: {
+      // Called at module scope, before app ready, as Electron requires.
+      registerSchemesAsPrivileged: (schemes: Array<{ scheme: string; privileges: Record<string, unknown> }>) => {
+        registeredSchemes.push(...schemes)
+      },
+      handle: (scheme: string, handler: (request: { url: string }) => unknown) => {
+        handledProtocols.set(scheme, handler)
+      },
+    },
     shell: {
       openExternal: async (url: string) => {
         externalOpens.push(url)
@@ -124,7 +146,46 @@ function call(channel: string, ...args: unknown[]) {
   return handler({ sender: window.webContents, senderFrame: { url: "http://127.0.0.1:4455/" } }, ...args)
 }
 
+describe("renderer console mirroring", () => {
+  const mirror = () => FakeBrowserWindow.instances[0].webContents.listeners.get("console-message")!
+  const logFile = join(dataDir, "logs", "desktop.log")
+  const readLog = () => (existsSync(logFile) ? readFileSync(logFile, "utf8") : "")
+
+  test("annotates the Electron sandbox bootstrap race instead of failing loudly", () => {
+    const event = {
+      level: "error" as const,
+      message: "TypeError: Cannot destructure property 'preloadScripts' of 'binding.startupData' as it is null.",
+      sourceId: "node:electron/js2c/sandbox_bundle",
+      lineNumber: 2,
+    }
+    mirror()(event)
+    mirror()(event)
+    const log = readLog()
+    const lines = log.split("\n").filter((line) => line.includes("binding.startupData"))
+    expect(lines.length).toBe(1)
+    expect(lines[0]).toContain("[info]")
+    expect(lines[0]).toContain("sandbox bootstrap race")
+  })
+
+  test("still mirrors real renderer errors verbatim", () => {
+    mirror()({ level: "error", message: "boom in the page", sourceId: "app.js", lineNumber: 7 })
+    expect(readLog()).toContain("[renderer] boom in the page (app.js:7)")
+  })
+})
+
 describe("main window security", () => {
+  test("serves the renderer from the privileged oc:// scheme, not file://", () => {
+    // Module scripts need a standard, secure origin; file:// would leave the
+    // packaged app blank. This is the regression test for that bug.
+    expect(registeredSchemes).toEqual([
+      {
+        scheme: "oc",
+        privileges: expect.objectContaining({ standard: true, secure: true, corsEnabled: true }),
+      },
+    ])
+    expect(handledProtocols.has("oc")).toBe(true)
+  })
+
   test("creates a window with the hardened web preferences", () => {
     expect(windows.length).toBe(1)
     const prefs = windows[0].options.webPreferences
@@ -144,6 +205,18 @@ describe("main window security", () => {
     const before = externalOpens.length
     handler({ url: "file:///etc/passwd" })
     expect(externalOpens.length).toBe(before)
+  })
+
+  test("renderer CSP allows WebAssembly but not eval", () => {
+    // The renderer bundles wasm modules (e.g. tree-sitter grammars); without
+    // 'wasm-unsafe-eval' they throw CompileErrors at runtime. Full 'unsafe-eval'
+    // must stay out — the server UI CSP (packages/opencode/src/server/shared/ui.ts)
+    // follows the same pattern.
+    const html = readFileSync(join(__dirname, "..", "..", "index.html"), "utf8")
+    const csp = /content="([^"]+)"/.exec(html)![1]
+    expect(csp).toContain("script-src")
+    expect(csp).toContain("'wasm-unsafe-eval'")
+    expect(csp).not.toMatch(/'unsafe-eval'/)
   })
 })
 
@@ -197,6 +270,24 @@ describe("main ipc handlers", () => {
     expect(call(IPC.defaultServerGet)).toBe("https://team.example.com/")
     expect(call(IPC.defaultServerSet, null)).toBe(true)
     expect(call(IPC.defaultServerGet)).toBeNull()
+  })
+
+  test("suppresses notifications while the window is focused", () => {
+    const before = shownNotifications.length
+    FakeBrowserWindow.instances[0].focused = true
+    expect(call(IPC.notify, { title: "Respons siap", description: "New session - 2026" })).toBe(false)
+    expect(shownNotifications.length).toBe(before)
+  })
+
+  test("shows notifications only while the window is blurred", () => {
+    const before = shownNotifications.length
+    FakeBrowserWindow.instances[0].focused = false
+    expect(call(IPC.notify, { title: "Respons siap", description: "New session - 2026" })).toBe(true)
+    expect(shownNotifications.length).toBe(before + 1)
+    expect(shownNotifications[shownNotifications.length - 1]).toEqual({
+      title: "Respons siap",
+      body: "New session - 2026",
+    })
   })
 
   test("validates storage writes", () => {

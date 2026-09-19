@@ -25,7 +25,14 @@ type CurrentDelta = Extract<
   { type: "session.text.delta" | "session.reasoning.delta" | "session.tool.input.delta" | "session.compaction.delta" }
 >
 
-export function adaptServerEvent(event: OpenCodeEvent): ServerEvent {
+export function adaptServerEvent(input: OpenCodeEvent): ServerEvent {
+  // Backward compatibility: older instance streams (and servers exposing the
+  // v2 API over the legacy instance transport) encode the payload under
+  // `properties` instead of `data`. Normalize once so both the legacy reducer
+  // (`event.properties`) and applyV2 (`current.data`) see a populated payload.
+  const properties = (input as OpenCodeEvent & { properties?: unknown }).properties
+  const event: OpenCodeEvent =
+    properties === undefined ? input : ({ ...input, data: properties } as OpenCodeEvent)
   if (event.type === "permission.v2.asked") {
     return {
       id: event.id,

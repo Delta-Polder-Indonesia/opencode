@@ -4,7 +4,8 @@ Tanggal rencana: **19 September 2026**.
 Status: **Tahap 0 sebagian selesai; Tahap 1A dan 1B SELESAI dan tervalidasi di
 Windows 10 x64 nyata — aplikasi Electron terbuka dan UI OpenCode ter-render,
 dengan backend lokal yang dijalankan sendiri oleh aplikasi; Tahap 1C sebagian;
-Tahap 1D belum dimulai**. Lihat bagian [Progres](#progres) untuk bukti per tahap.
+Tahap 1D disiapkan — pipeline packaging tervalidasi offline, artefak installer
+menunggu eksekusi di Windows**. Lihat bagian [Progres](#progres) untuk bukti per tahap.
 
 Yang **belum** diuji pada UI yang sudah hidup: folder picker, chat end-to-end,
 dan kebersihan proses saat keluar (tidak ada `opencode.exe` yatim).
@@ -158,9 +159,17 @@ tersedia, jangan menganggap build desktop Windows telah tervalidasi.
 
 ### 1D. Installer dan penerimaan
 
-- [ ] Pilih tooling packaging (misalnya Electron Builder atau Forge) setelah
+- [x] Pilih tooling packaging (misalnya Electron Builder atau Forge) setelah
       memeriksa kebutuhan native dependency, binary backend, dan lisensinya.
-- [ ] Buat installer Windows x64 yang memuat aset UI lokal dan backend.
+      Electron Builder 26.15.3 (sejak 1A). Diperiksa dan disesuaikan: collector
+      dependency-nya untuk bun menyapu node_modules monorepo (ditangani, lihat
+      progres 2026-09-19); tidak ada native dependency runtime; lisensi MIT.
+- [~] Buat installer Windows x64 yang memuat aset UI lokal dan backend.
+  **Sebagian**: `script/package.ts`, konfigurasi `electron-builder.yml`,
+  dan ikon installer siap; alur packaging tervalidasi offline di Linux
+  (stub Electron dist). Artefak installer sendiri belum ada — kompilasi
+  backend lintas-platform tidak didukung, jadi wajib dijalankan di Windows
+  dengan `bun run package:win`.
 - [ ] Uji install, launch, pilih proyek, chat, terminal, tutup, buka ulang, dan uninstall
       pada lingkungan Windows yang bersih.
 - [ ] Verifikasi path dengan spasi/non-ASCII, folder tidak bisa diakses, provider
@@ -772,6 +781,204 @@ tertutup tes:
 3. Tahap 1D: `electron-builder --win --x64`, lalu uji install → buka lewat ikon →
    pilih folder → chat → terminal → tutup → buka ulang → uninstall pada Windows bersih.
 
+#### 2026-09-19 — Tahap 1D disiapkan: pipeline packaging tervalidasi offline
+
+**Status:** alat packaging siap dan alurnya tervalidasi; **artefak installer
+belum dibuat** — hanya bisa dihasilkan di Windows.
+
+**Perubahan dan file terkait**
+
+| Berkas                                        | Isi                                                                                                                          |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `packages/desktop/script/package.ts` (baru)   | Orkestrator 1D: backend → bundel → `electron-builder`, dengan verifikasi prasyarat dan penolakan lintas-platform             |
+| `packages/desktop/electron-builder.yml`       | `files` menolak `node_modules`; `electronFuses` (runAsNode/NODE_OPTIONS/inspect/file-protocol mati)                          |
+| `packages/desktop/package.json`               | Semua dependensi jadi `devDependencies` (bundel sudah mandiri); `author` + `repository`; `package:win` → `script/package.ts` |
+| `packages/desktop/build/icon.ico`, `icon.png` | Ikon installer 6 ukuran, dibuat dari aset resmi proyek (`packages/ui/.../web-app-manifest-512x512.png`)                      |
+| `.gitignore`                                  | `packages/desktop/release/` tidak masuk Git                                                                                  |
+| `bun.lock`                                    | Mengikuti perpindahan dependensi                                                                                             |
+
+**Temuan penting (tidak terlihat sebelum dijalankan)**
+
+1. **Bundel main terbukti mandiri.** `dist/main/index.cjs` hanya `require`
+   `electron` + builtin Node; preload hanya `electron`. Artinya asar tidak
+   membutuhkan `node_modules` sama sekali.
+2. **electron-builder + bun workspace menyapu node_modules monorepo.** Collector
+   untuk bun memakai traversal file (bun tidak punya CLI dependency tree); saat
+   paket desktop tak punya `dependencies`, ia naik ke root monorepo dan
+   mengumpulkan dependensi root (hasil: asar 107 MB penuh modul mati), dan pada
+   percobaan pertama sempat mencoba **rebuild native `@parcel/watcher`** —
+   jalur yang butuh toolchain build di mesin pengguna. Perbaikan dua lapis:
+   semua dependensi desktop menjadi `devDependencies` (sah karena semuanya
+   di-bundel saat build) dan pola `files: "!**/node_modules/**"`. Hasil: asar
+   **36 MB, 0 entri node_modules**, tidak ada langkah rebuild native.
+3. **Pengaman lintas-platform.** Installer Windows yang berisi binary backend
+   Linux akan rusak secara diam-diam; `script/package.ts` menolak berjalan di
+   luar Windows untuk target rilis (diuji langsung).
+4. **Electron fuses** kini bagian dari packaging: `ELECTRON_RUN_AS_NODE`,
+   `NODE_OPTIONS`, `--inspect`, dan privilege ekstra `file://` dimatikan di
+   binary hasil kemas. Fuses integritas-asar sengaja ditunda ke passes
+   hardening terpisah.
+
+**Verifikasi (perintah dan hasil)**
+
+| Perintah                                                                | Hasil                                                                                                                                  |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `cd packages/desktop && bun test src`                                   | 99 pass / 0 fail                                                                                                                       |
+| `cd packages/desktop && bun run typecheck`                              | bersih (setelah `tsgo -b` di `packages/app`)                                                                                           |
+| `cd packages/desktop && bun run build`                                  | sukses; bundel main diverifikasi mandiri                                                                                               |
+| `bun run build:backend` (linux-x64)                                     | sukses, versi `1.18.31-desktop`; `resources/backend/opencode` (126 MB)                                                                 |
+| `bun run script/verify-backend.ts`                                      | **8/8 lulus** terhadap binary hasil kompilasi                                                                                          |
+| `bun run script/package.ts --linux --dir --skip-*` + stub Electron dist | asar 36 MB, **0 node_modules**, `dist/` + `package.json` lengkap, `resources/backend/opencode` di luar asar, langkah fuses tereksekusi |
+| `bun run script/package.ts` (di Linux)                                  | menolak dengan pesan jelas (pengaman lintas-platform bekerja)                                                                          |
+| `bunx oxlint` / `bunx prettier --check`                                 | bersih                                                                                                                                 |
+
+Smoke packaging memakai stub `electronDist` karena **semua unduhan Electron
+diblokir sandbox** (github.com putus TLS; mirror npmmirror pun tidak stabil),
+jadi unduhan NSIS/winCodeSign tidak mungkin di sini. Elemen yang tervalidasi
+adalah semua yang dikendalikan konfigurasi kita; elemen dari jaringan
+(Electron dist, NSIS) baru tersentuh di Windows.
+
+**Kendala/risiko**
+
+- Artefak installer wajib dibuat di Windows (`bun run package:win`); di sandbox
+  terblokir unduhan, bukan kode.
+- Installer NSIS belum berbahasa (default Inggris) dan **tanpa code signing** —
+  SmartScreen akan memperingatkan. Bukan siap rilis.
+- Auto-update tidak disentuh sama sekali (`--publish never` dipaku di script).
+
+**Langkah berikutnya**
+
+1. Di Windows: `bun run package:win`, lalu uji install → buka lewat ikon →
+   pilih folder → chat → tutup → buka ulang → uninstall.
+2. Verifikasi UI hidup dari Tahap 1B: folder picker, chat end-to-end, terminal,
+   dan **tidak ada `opencode.exe` yatim** setelah keluar.
+
+#### 2026-09-19 — Installer jadi; layar putih di aplikasi ter-install ditemukan penyebabnya
+
+Laporan pengguna: `bun run package:win` **berhasil membuat installer** dan
+aplikasi ter-install — tetapi jendelanya putih kosong. Ini lari pertama
+artefak Tahap 1D, dan langsung menemukan cacat yang tidak mungkin terlihat di
+mode dev.
+
+**Akar masalah.** Renderer produksi adalah build Vite yang entry-nya
+`<script type="module" crossorigin>`. Module script butuh CORS; halaman
+`file://` ber-origin opaque ("null"), sehingga mesin browser memblokir script
+entry — jendela putih tanpa UI yang pernah hidup. Mode dev tidak pernah kena
+karena renderer-nya datang dari server HTTP Vite (`127.0.0.1:4455`). Jalur
+`file://` memang satu-satunya yang belum pernah diuji runtime. CSP `'self'`
+di atas `file://` juga tidak reliabel.
+
+**Perbaikan.** Renderer dikemas dan dimuat lewat skema kustom
+**`oc://renderer`** (`src/main/renderer-protocol.ts` baru):
+
+- Skema didaftarkan `standard + secure + supportFetchAPI + corsEnabled +
+stream` sebelum app ready; `protocol.handle` menyajikan berkas dari
+  `dist/renderer` (di dalam asar saat ter-packaged) dengan content-type yang
+  benar dan penolakan traversal. Parser URL WHATWG menormalkan `..` maupun
+  `%2e%2e`, dan pemeriksaan `relative()` mengunci hasil di dalam direktori
+  renderer — keduanya terkunci tes.
+- **`oc://renderer` bukan tebakan**: itu origin yang sudah diizinkan
+  allowlist CORS backend (`packages/server/src/cors.ts` mendaftar
+  `oc://renderer` untuk desktop renderer) — backend tidak diubah sama sekali,
+  dan origin-nya identik dengan yang dipakai desktop upstream.
+- Mode dev tetap lewat server Vite; `bun run start` dan aplikasi ter-install
+  kini sama-sama lewat `oc://`.
+- `OPENCODE_DESKTOP_DEVTOOLS=1` kini juga dihormati di aplikasi ter-install,
+  supaya layar putih berikutnya bisa diinspeksi langsung di tempat.
+
+**Verifikasi:** `bun test src` **109 pass / 0 fail** (16 tes baru: pemetaan
+URL→berkas, penolakan skema/host asing, content-type, dan regresi "renderer
+wajib lewat oc:// privileged, bukan file://" pada smoke main process);
+typecheck bersih; bundel tetap mandiri (`electron` + builtin Node); smoke
+packaging offline memastikan `index.cjs` di dalam asar memuat perbaikan.
+**Belum terverifikasi runtime di Windows** — pengguna perlu build ulang
+installer dari branch ini (`git pull` dulu, lalu `bun run package:win` atau
+`bun run script/package.ts --skip-backend`).
+
+---
+
+#### 2026-09-19 — Diagnosa "jawaban tidak terlihat saat AI menjawab" + default thinking jadi lipatan
+
+Laporan pengguna setelah installer jalan: saat AI menjawab, teks jawabannya tidak
+kelihatan; diinginkan (1) teks percakapan selalu tampil, (2) teks "sedang
+berpikir" bisa dibuka-tutup, (3) teks "mencari berkas" bisa dibuka-tutup, (4)
+output terminal panjang bisa dilipat, bukan dihapus.
+
+**Diagnosa (empiris, bukan tebakan).** Backend dijalankan sungguhan di sandbox
+dengan model palsu lokal (OpenAI-compatible yang meng-stream reasoning lalu
+jawaban kata demi kata). Urutan event yang diterima UI terekam lengkap:
+`message.part.updated reasoning` → `message.part.delta` reasoning per fragmen →
+`message.part.updated text` → **`message.part.delta field=text part=text`
+mengalir live** → snapshot akhir. Artinya sisi server streaming benar. Sisi UI
+juga diperiksa per lapisan: reducer `message.part.delta` menambahkan teks ke
+part secara live; `TextPartDisplay` selalu merender jawaban tanpa lipatan
+(pacing 24ms); timeline mengikuti ke bawah (`anchorTo: "end"`,
+`followOnAppend: true`); kartu tool (grep/glob/read/list) dikelompokkan sebagai
+`ContextToolGroup` yang bisa dibuka-tutup; kartu bash/terminal bisa dilipat dan
+outputnya terpagasi (`max-height: 240px` + scroll internal).
+
+**Celah yang ditemukan dan diperbaiki.** `showReasoningSummaries` default
+`false`: teks reasoning **tidak dirender sama sekali** — model yang berpikir
+lama hanya menampilkan shimmer "Thinking" yang tidak bisa dibuka, persis
+keluhan "tidak kelihatan sedang menjawab apa". Default kini `true`: teks
+thinking tersedia sebagai lipatan — tertutup saat streaming, otomatis tertutup
+saat selesai, bisa dibuka ulang kapan pun (`createReasoningDisclosure` yang
+sudah ada). Pengaturan lama di Settings tetap dihormati bila pernah diubah.
+
+**Verifikasi:** event flow direkam dari backend nyata (di atas); `packages/app`
+**725 pass / 0 fail** (1 tes regresi baru untuk default); `session-ui` 83 pass /
+0 fail; typecheck bersih.
+
+**Belum bisa dipastikan dari sini:** bila provider/model pengguna mem-buffer
+seluruh jawaban (tanpa delta) atau menaruh jawaban di reasoning, UI tidak punya
+teks untuk ditampilkan sebelum selesai — perlu dikonfirmasi model apa yang
+dipakai dan apakah jawaban baru muncul di akhir giliran.
+
+**Lanjutan (jawaban pengguna: "halo"/"apa kabar" pun jawabannya tidak
+kelihatan; model gratis lewat router).** Jalur data renderer dikunci tes baru
+(\`streaming-answer.test.ts\`): urutan event hasil rekaman diputar lewat
+reducer yang sama dipakai aplikasi — part teks tumbuh live, renderable di
+tengah streaming, dan utuh setelah settle (app 726 pass / 0 fail). Dengan
+demikian sisi server dan sisi data sudah terbukti; tersangka tersisa ada di
+runtime pengguna (error render yang kini terekam di desktop.log) atau
+perilaku router/model-nya. Net keamanan dari perubahan default reasoning:
+bila router menaruh jawaban ke dalam part reasoning, jawaban kini tetap
+bisa ditemukan di lipatan thinking yang bisa dibuka.
+
+---
+
+#### 2026-09-19 — Error `binding.startupData` null: race bootstrap sandbox Electron, bukan error aplikasi
+
+Pengguna melaporkan error di DevTools: `Electron sandboxed_renderer.bundle.js
+script failed to run — TypeError: Cannot destructure property 'preloadScripts'
+of 'binding.startupData' as it is null.`
+
+**Identifikasi.** Error ini terjadi di bundle bootstrap sandbox Electron sendiri,
+sebelum preload aplikasi jalan. Kasus serupa di proyek lain (Zenium PR #81,
+yoma PR #5, isu claude-code #86577) menunjukkan polanya: dokumen kosong awal
+kehilangan race melawan navigasi pertama — sandbox init dieksekusi di konteks
+skema buangan tanpa startupData, sementara halaman sebenarnya dan preload-nya
+tetap bekerja (yoma bahkan menyaringnya sebagai noise di e2e-nya). Zenium
+memprodusinya dengan double-load; kita hanya memuat sekali per window, jadi
+kalau muncul, itu flake upstream — bukan cacat alur kita.
+
+**Tindakan (kecil, sengaja):** mirror console renderer di main process kini
+mengenali pesan `binding.startupData`/`sandboxed_renderer.bundle.js`, mencatatnya
+sekali di level info dengan penjelasan, dan tidak lagi menuliskannya sebagai
+error — supaya pembacaan `desktop.log` saat triase tidak salah menyimpulkan.
+Error renderer lain tetap dicerminkan apa adanya (terkunci 2 tes regresi;
+desktop 111 pass / 0 fail).
+
+**Dipertimbangkan dan ditolak untuk sekarang:** menaikkan Electron ke 44.4.3.
+Rilis itu baru ~30 jam; kebijakan supply-chain repo (`minimumReleaseAge` 3 hari
+di `bunfig.toml`) memblokirnya — dan tanpa catatan pembaruan yang menyebut
+perbaikan race ini, menunggu kebijakan itu adalah keputusan yang benar.
+
+**Pertanyaan penentu untuk pengguna:** apakah UI tetap tampil saat error itu
+muncul? Kalau ya, error tersebut tidak berbahaya dan investigasi jawaban yang
+tak terlihat berlanjut dengan bukti `desktop.log` + nama model. Kalau UI tidak
+tampil, itu kasus berbeda — kirim `desktop.log`.
+
 ---
 
 ## Arsip catatan teknis sebelumnya
@@ -1145,3 +1352,178 @@ cd packages/core && bun test && bun run typecheck      # ~35s + ~10s
 cd ../opencode && bun run script/httpapi-exercise.ts --mode coverage \
   --fail-on-missing --fail-on-skip                     # 220 skenario
 ```
+
+## Fix akar masalah "balasan AI tak tampil di chat desktop" (2026-09-19, commit 460ffd6)
+
+**Gejala**: di chat, balasan AI tidak pernah muncul (bahkan "hallo"); notifikasi
+"sesi telah selesai" muncul; pesan user tampil (optimistic).
+
+**Akar masalah (terbukti empiris terhadap backend fork yang jalan)**:
+1. Backend fork melayani `/global/health` = `{healthy:true}` dan `/api/health` =
+   `{healthy:true}` (tanpa `pid`) → `detectServerProtocol` (packages/app/src/utils/
+   server-protocol.ts) selalu memilih **v1** → UI berlangganan stream global legacy
+   `/global/event`, yang mengirim event **tanpa field `directory` level-atas** → semua
+   event jatuh ke bucket "global" dan tidak pernah diteruskan ke store direktori
+   proyek yang dibaca timeline.
+2. Lebih mendasar lagi: transport event di server ini mengirim payload di bawah
+   kunci **`properties`** (`/event` → `{id,type,properties}`; `/global/event` →
+   `{payload:{...}}`), sedangkan `adaptServerEvent` (packages/app/src/context/
+   server-sdk.tsx) hanya membaca `event.data` → `properties` hasil adaptasi **undefined
+   untuk SEMUA event** → reducer legacy maupun applyV2 tidak pernah mengisi store.
+   Notifikasi tetap muncul karena hanya butuh `event.type`; pesan user tampil karena
+   optimistic; histori tampil karena di-load via HTTP.
+
+**Perbaikan (commit 460ffd6)**:
+- `detectServerProtocol`: `/api/health` yang menjawab JSON (apa pun bentuknya) → **v2**
+  (namespace API v2 = otoritatif); fallback `/global/health` hanya untuk server yang
+  pra-dating namespace `/api/*`.
+- `adaptServerEvent`: normalisasi sekali di awal — payload `properties` → `data`
+  (termasuk pada `current`), sehingga reducer legacy (`event.properties`) DAN
+  applyV2 (`current.data`) sama-sama melihat payload terisi.
+- Tes: matriks pemilihan protokol diperbarui + tes baru yang mengunci normalisasi.
+
+**Bukti empiris** (backend diag 127.0.0.1:4099, provider palsu):
+- `/api/event` → shape v2 `{id,type,data}`; `/event` → `{id,type,properties}`;
+  `/global/event` → `{payload}` tanpa directory.
+- `detectServerProtocol(backend nyata)` = **v2** (dengan fix).
+- Suite: app unit 728/0 (`bun run test:unit` — WAJIB `--conditions=solid`, lihat
+  catatan di bawah), typecheck app 0 error, desktop 111/0, typecheck desktop 0 error.
+
+**Kunci lingkungan test app**: `bun test` polos di packages/app sekarang GAGAL massal
+dengan `Export named 'use' not found in module ... solid-js/web/dist/server.js` —
+bukan regresi kode; resolusi kondisi modul. Jalankan **`bun run test:unit`**
+(= `bun test --conditions=solid --only-failures --preload ./happydom.ts ./src`).
+
+**Status**: BELUM terverifikasi di Windows nyata — menunggu user uji ulang
+(dev mode, bukan installer).
+
+## KOREKSI (2026-09-19, commit 45288d5): deteksi v2 = regresi; jalur v1 terbukti sehat
+
+**Koreksi atas kesimpulan sebelumnya**: pengamatan "event /global/event tanpa
+directory" TERNYATA keliru — frame yang dulu ditangkap hanyalah frame sintetis
+`server.connected` buatan handler (memang tanpa directory). Event bus sungguhan
+TERBUKTI membawa `directory` level-atas (57 frame ber-directory dalam satu capture;
+`message.updated`, `message.part.updated`, `session.status` semua dengan directory).
+`event-v2-bridge.ts` selalu menempelkan `directory: event.location?.directory ?? ctx?.directory`.
+
+**Regresi 460ffd6**: mengubah deteksi agar /api/health apa pun → v2 membuat UI
+memakai jalur v2 penuh di backend fork, padahal:
+- `GET/POST /api/session/{sessionID}/model` → **500 bodi kosong** (tidak diimplementasi
+  di instance httpapi fork; endpoint memang terdaftar di packages/protocol/src/groups/session.ts
+  tapi handler-nya tidak ada — daftar handler legacy di handlers/session.ts tidak punya "model").
+- Compat layer (packages/app/src/utils/server-compat.ts) hanya memetakan input prompt
+  untuk jalur v1; jalur v2 pass-through mentah — input merged (text/legacyParts/files/agents)
+  tidak dipetakan ke body v2 `{prompt:{text,files,agents}}` → prompt v2 rusak.
+- Loop agen v2 (POST /api/session/{id}/prompt) memakai kosakata event baru
+  (`session.next.*`) dan memilih model DEFAULT server (bukan model UI) →
+  bukan jalur yang siap untuk desktop fork.
+
+**Tindakan**: commit 45288d5 mengembalikan server-protocol.ts ke logika lama
+(/global/health healthy → v1; /api/health {pid} → v2; transitional → v1).
+Normalisasi adaptServerEvent (properties→data) DIPERTAHANKAN (no-op untuk server
+v2 spec-compliant). Suite: app 727/0, typecheck bersih.
+
+**Verifikasi end-to-end jalur v1 (empiris, backend hidup)**:
+- POST /session/{id}/message (legacy, dengan model+parts) → 200 → stream
+  /global/event mengirim: message.updated (user) → message.part.updated (part user)
+  → session.status busy → message.updated (asisten, parentID=user) → …
+  semua frame `data: {"directory":"<dir>","project":…,"payload":{id,type,properties}}`.
+- SDK v2 `sse.get("/global/event")` meng-yield frame JSON mentah (runtime `yield data`),
+  tipe `GlobalEvent={directory,payload}` — cocok dengan ekspektasi UI
+  (`"payload" in event`, `event.directory`).
+
+**JANGAN mengubah deteksi ke v2 untuk backend hybrid sebelum**: (1) handler
+`session.getModel`/`switchModel` diimplementasi di fork, (2) compat layer v2
+memetakan body prompt, (3) loop v2 memakai model sesi UI.
+
+**Arsitektur event yang benar untuk diingat**:
+- SSE heartbeat/connected dari handler global memang tanpa directory → bucket "global" (diabaikan reducer).
+- Heartbeat handler global: 10 detik; /api/event (v2): 15 detik + `: heartbeat` comment.
+- `StreamEvent` SDK: `{data,event?,id?,retry?}` — yang di-yield ke consumer adalah `data`-nya saja.
+
+## "Respons siap - New session - <tanggal>" muncul tiap balasan (2026-09-19)
+
+**Dekode gejala**: teks yang dilihat user = notifikasi OS `responseReady`
+(`notification.session.responseReady.title` = "Respons siap") dengan deskripsi
+`session.title` yang masih default `New session - <ISO>` (packages/app/src/context/
+notification.tsx `handleSessionIdle`). BUKAN sesi baru yang dibuat — daftar sesi
+server stabil (diverifikasi di sandbox; tidak ada sesi anak per balasan).
+
+**Perbandingan dengan upstream (anomalyco/opencode, branch dev)**:
+- `handleSessionIdle`/`handleSessionError` di packages/app: IDENTIK dengan upstream
+  (upstream juga memanggil platform.notify tanpa gate viewed).
+- Default settings.notifications.agent = true di keduanya.
+- Upstream TIDAK punya notifikasi desktop; sistem notifikasi mereka ada di TUI
+  (packages/tui/src/feature-plugins/system/notifications.ts + attention.ts) dengan
+  pola kunci: `notification: isSubagent ? false : { when: "blurred" }` — toast OS
+  HANYA saat jendela TIDAK fokus; suara `when: "always"`.
+- `ensureTitle` (packages/opencode/src/session/prompt.ts) dan `getSmallModel`
+  (packages/opencode/src/provider/provider.ts) fork IDENTIK dengan upstream —
+  kegagalan ganti judul di Windows berasal dari perilaku provider router gratis
+  user (title call = llm.stream kecil `system:[]`, `tools:{}`, `small:true`,
+  `Effect.ignore` + fork → kegagalan ditelan, judul tetap default).
+
+**Fix (selaras upstream)**: packages/desktop/src/main/index.ts handler IPC.notify
+kini memeriksa `window.isFocused()` → return false bila fokus (toast hanya saat
+blurred). +2 tes (focused suppress / blurred show). Suite desktop 113/0.
+
+**Menggantung**: kenapa title generation gagal dengan model router user — butuh
+desktop.log (cari "failed to generate title"). Judul default akan tetap muncul di
+notifikasi saat window blurred sampai title berhasil dibuat sekali.
+
+## desktop.log user (2026-09-19): dua temuan + lokasi log server
+
+**Log dibaca dari**: `%APPDATA%\@opencode-ai\desktop\logs\desktop.log`
+(`app.getPath("logs")` — subfolder `logs`, BUKAN langsung `%APPDATA%\OpenCode`).
+Catatan: log ini berisi console renderer + main process; **log backend/server
+TIDAK ada di sini**.
+
+**Temuan 1 — CSP memblokir WASM (fixed, commit ini)**: berulang kali
+`CompileError: WebAssembly.instantiate() ... script-src 'self' 'unsafe-inline'`
+dari `oc://renderer/assets/wasm-*.js`. `packages/desktop/index.html` tidak punya
+`'wasm-unsafe-eval'` di script-src. Fix: tambah `'wasm-unsafe-eval'` (pola sama
+dengan CSP UI server di packages/opencode/src/server/shared/ui.ts yang sudah
+memilikinya; `unsafe-eval` penuh TETAP dilarang). +tes yang mengunci CSP.
+Gejala yang dihilangkan: modul wasm renderer (grammar/syntax) gagal load.
+
+**Temuan 2 — "Failed to create terminal"**: error asli dari SERVER
+("Unexpected server error. Check server logs for details.") — UI hanya
+melemparkan ulang (server-compat.ts `pty.create`, terminal.tsx:356).
+Perlu log server: `~\.local\share\opencode\log\` (Global.Path.log, packages/core/
+src/global.ts; file: opencode.log) untuk lihat stack PTY di Windows.
+
+**Log server di Windows**: `C:\Users\<user>\.local\share\opencode\log\opencode.log`
+(xdg-basedir → HOME/.local/share). Di sinilah jejak "failed to generate title"
+(Effect.logError di packages/opencode/src/session/prompt.ts) dan error PTY
+akan terlihat.
+
+## Akar "prompt_async failed / pty 500 / file list 500 / reference 500" (2026-09-19): BINARY BACKEND STALE
+
+**Log server user** (`~\.local\share\opencode\log\opencode.log`) menunjukkan satu
+TypeError yang sama membunuh banyak jalur di Windows:
+`TypeError: undefined is not an object (evaluating 'i.name')` — di `resolve`,
+triple-nested `.map`, dipanggil dari FileHttpApi.findFile/list, PtyHttpApi.create,
+Server.listen (fallback), DAN `prompt_async failed ... Die(TypeError)`.
+
+**Kunci**: desktop (dev maupun packaged) TIDAK menjalankan source; ia menjalankan
+**binary backend hasil `bun build --compile`** yang di-stage di
+`packages/desktop/resources/backend/opencode.exe` (packages/desktop/script/backend.ts,
+dipanggil `bun run build:backend`; paths.ts `backendBinaryPath`). Semua frame
+`B:/~BUN/root/chunk-*.js` di log = binary bundel yang STALE (dibangun dari commit lama).
+
+**Bukti source sehat**: di sandbox (source terbaru, Linux) semua endpoint yang 500
+di mesin user kembali 200: `/api/fs/find`, `/api/fs/list`, `/api/reference`,
+`/api/pty` (+ legacy `/find/file`, `/file`, `/session`).
+Catatan: path salah/tak dikenal memang menghasilkan 500 bodi kosong (bukan 404) —
+perilaku router fork, jangan disalahartikan sebagai bug endpoint.
+
+**Solusi user**: `git pull` → `cd packages/desktop && bun run build:backend` →
+jalankan ulang `bun run dev`. Renderer CSP wasm fix (3603743) otomatis aktif di
+dev (vite menyaji index.html dari source); fix notifikasi (c612b03) ikut karena
+main bundle di-rebuild tiap dev start.
+
+**Jika TypeError i.name MASIH muncul setelah rebuild binary dari source terbaru**:
+baru itu bug Windows-specific di source — minta ulang log server (error akan punya
+posisi terbaru; build.ts pakai `minify:false` untuk main/preload, backend dari
+packages/opencode/script/build.ts) dan telusuri `resolve`+`i.name` di
+packages/core/src/shell.ts (Windows-only branch) sebagai kandidat pertama.

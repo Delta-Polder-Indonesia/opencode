@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { existsSync } from "node:fs"
+import { readFile } from "node:fs/promises"
 import { join } from "node:path"
-import { pathToFileURL } from "node:url"
 import {
   app,
   BrowserWindow,
@@ -10,6 +9,7 @@ import {
   Menu,
   nativeTheme,
   Notification,
+  protocol,
   shell,
   type IpcMainInvokeEvent,
 } from "electron"
@@ -25,6 +25,14 @@ import { allowInAppNavigation, isLoopbackUrl, resolveLocalServerUrl } from "./co
 import { DesktopLog } from "./log"
 import { buildMenuTemplate, menuPlatform } from "./menu"
 import { backendBinaryPath, mainBundleDir } from "./paths"
+import {
+  RENDERER_ENTRY_URL,
+  RENDERER_SCHEME,
+  RENDERER_SCHEME_PRIVILEGES,
+  rendererBundleDir,
+  rendererContentType,
+  rendererFilePath,
+} from "./renderer-protocol"
 import { DesktopStorage } from "./storage"
 import {
   IPC,
@@ -55,6 +63,11 @@ const log = new DesktopLog(app.getPath("logs"))
 /** Resolved once: every sibling bundle is located relative to this. */
 const MAIN_DIR = mainBundleDir()
 
+// Must happen before app ready. Standard+secure is what lets the packaged
+// renderer load its ES-module entry and talk to the backend under one origin
+// the backend already allowlists (see renderer-protocol.ts).
+protocol.registerSchemesAsPrivileged([{ scheme: RENDERER_SCHEME, privileges: { ...RENDERER_SCHEME_PRIVILEGES } }])
+
 /** Shape of the Electron 36+ console-message event. */
 type ConsoleMessageEvent = {
   level?: "debug" | "info" | "warning" | "error"
@@ -65,6 +78,8 @@ type ConsoleMessageEvent = {
 
 /** Pre-36 Electron reported console levels as 0=verbose 1=info 2=warning 3=error. */
 const LEGACY_CONSOLE_LEVELS = ["debug", "info", "warning", "error"] as const
+/** Logged once per process: the sandbox bootstrap race below is Electron-internal. */
+let SANDBOX_RACE_LOGGED = false
 
 const storage = new DesktopStorage(join(app.getPath("userData"), "storage"))
 const windowIDs = new WeakMap<BrowserWindow, string>()
@@ -122,16 +137,13 @@ function t(key: DesktopNativeKey) {
   return translations?.messages[key] ?? DESKTOP_NATIVE_ENGLISH[key]
 }
 
-function rendererEntry() {
-  if (IS_DEV && DEV_RENDERER_URL) return { type: "url" as const, value: DEV_RENDERER_URL }
-  const file = join(MAIN_DIR, "..", "renderer", "index.html")
-  return { type: "file" as const, value: file }
+function rendererEntryUrl() {
+  if (IS_DEV && DEV_RENDERER_URL) return DEV_RENDERER_URL
+  return RENDERER_ENTRY_URL
 }
 
 function rendererOrigin() {
-  const entry = rendererEntry()
-  if (entry.type === "url") return new URL(entry.value).origin
-  return "file://"
+  return new URL(rendererEntryUrl()).origin
 }
 
 /** Only windows this process created may call privileged IPC. */
@@ -278,6 +290,19 @@ async function createWindow() {
     const source = event?.sourceId ?? (typeof rest[3] === "string" ? rest[3] : "")
     const line = event?.lineNumber ?? (typeof rest[2] === "number" ? rest[2] : 0)
     const where = source ? ` (${source}:${line})` : ""
+    // Electron's sandbox bootstrap races the first navigation; when it loses,
+    // it logs this startupData error from a throwaway script context while the
+    // real page and its preload keep working. Log it once at info with the
+    // explanation so a triage read does not mistake it for an app failure.
+    if (message.includes("binding.startupData") || message.includes("sandboxed_renderer.bundle.js")) {
+      if (!SANDBOX_RACE_LOGGED) {
+        SANDBOX_RACE_LOGGED = true
+        log.info(
+          `[renderer] ${message}${where} -- known Electron sandbox bootstrap race; harmless when the UI still loads`,
+        )
+      }
+      return
+    }
     // `log.write` redacts, so credentials in a renderer log are not leaked here.
     log.write(level === "error" ? "error" : "warn", `[renderer] ${message}${where}`)
   })
@@ -288,24 +313,17 @@ async function createWindow() {
     log.error(`preload script failed at ${preloadPath}: ${error.message}`)
   })
 
-  // Devtools are opt-in: OPENCODE_DESKTOP_DEVTOOLS=1 bun run dev
-  if (IS_DEV && process.env.OPENCODE_DESKTOP_DEVTOOLS === "1") {
+  // Devtools are opt-in: OPENCODE_DESKTOP_DEVTOOLS=1. Also honored in a
+  // packaged app so a white window there can be inspected on the spot.
+  if (process.env.OPENCODE_DESKTOP_DEVTOOLS === "1") {
     window.webContents.openDevTools({ mode: "detach" })
   }
 
   window.once("ready-to-show", () => window.show())
 
-  const entry = rendererEntry()
-  if (entry.type === "url") {
-    log.info(`loading renderer from dev server ${entry.value}`)
-    await window.loadURL(entry.value)
-  } else {
-    if (!existsSync(entry.value)) {
-      log.error(`renderer bundle missing at ${entry.value}; run \`bun run build\` in packages/desktop`)
-    }
-    log.info(`loading renderer bundle ${pathToFileURL(entry.value).href}`)
-    await window.loadFile(entry.value)
-  }
+  const entry = rendererEntryUrl()
+  log.info(`loading renderer from ${entry}`)
+  await window.loadURL(entry)
   return window
 }
 
@@ -406,9 +424,14 @@ function registerIpc() {
   })
 
   ipcMain.handle(IPC.notify, (event, raw: unknown) => {
-    if (!senderWindow(event)) return false
+    const window = senderWindow(event)
+    if (!window) return false
     const request = parseNotifyRequest(raw)
     if (!request || !Notification.isSupported()) return false
+    // Upstream only demands attention while the window is blurred (see the TUI
+    // attention plugin's `notification: { when: "blurred" }`): never toast over
+    // an active session the user is looking at.
+    if (window.isFocused()) return false
     const notification = new Notification({ title: request.title, body: request.description ?? "" })
     notification.on("click", () => {
       const window = BrowserWindow.getAllWindows()[0]
@@ -481,6 +504,22 @@ function main() {
       app.exit(1)
       return
     }
+    // Serve the renderer bundle (inside the asar when packaged). Electron's fs
+    // is asar-aware, so plain readFile covers both packaged and dev layouts.
+    const rendererDir = rendererBundleDir(MAIN_DIR)
+    protocol.handle(RENDERER_SCHEME, async (request) => {
+      const file = rendererFilePath(rendererDir, request.url)
+      if (!file) return new Response(null, { status: 400 })
+      try {
+        const data = await readFile(file)
+        return new Response(new Uint8Array(data), { headers: { "content-type": rendererContentType(file) } })
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        log.warn(`renderer asset unavailable ${request.url}: ${String(error)}`)
+        return new Response(null, { status: code === "ENOENT" ? 404 : 500 })
+      }
+    })
+
     registerIpc()
     applyMenu()
 

@@ -7,6 +7,11 @@ directories:
 files:
   - dist/**/*
   - package.json
+  # The bundles are self-contained (dist/main requires only "electron" and Node
+  # builtins), so node_modules would be pure dead weight. electron-builder's
+  # traversal collector sweeps the monorepo root when the app package itself
+  # has no production dependencies; this negation keeps it out of the asar.
+  - "!**/node_modules/**"
 # The backend executable must live outside the asar archive: packed files
 # cannot be spawned as processes.
 extraResources:
@@ -15,6 +20,16 @@ extraResources:
     filter:
       - "**/*"
 asar: true
+# Defence in depth on the shipped binary: the packaged app must not be
+# abusable as a plain Node runtime (ELECTRON_RUN_AS_NODE, NODE_OPTIONS,
+# --inspect) and the file protocol gets no extra privileges. Behavior-only
+# fuses on purpose -- integrity validation and asar-only loading can wait
+# for a dedicated hardening pass.
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  grantFileProtocolExtraPrivileges: false
 win:
   target:
     - target: nsis
