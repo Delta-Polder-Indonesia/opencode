@@ -1590,3 +1590,52 @@ terbukti violation.
 **Probe:** `diagnosis-probe/markdown-worker-file-probe.html` (+ `.worker.js`) —
 buka dari disk di Chrome untuk melihat SecurityError `file://` verbatim +
 kaskade modul (CSP meta = persis packages/desktop/index.html).
+
+## "reference 500" di desktop user (2026-09-19): DIREKTORI WORKSPACE TIDAK BISA DI-RESOLVE
+
+Log console desktop dev user (renderer 127.0.0.1:4455, backend 127.0.0.1:4096)
+dibanjiri: `GET /api/reference?directory=E:\ProjeckWebCatur\WebCatur → 500`.
+
+**Direproduksi dari SOURCE di sandbox** (server dari source, bukan binary —
+`bun run ./src/index.ts serve`), jadi ini BUKAN sekadar "binary stale":
+```
+curl "/api/reference?directory=E%3A%5CProjeckWebCatur%5CWebCatur"  -> HTTP 500
+```
+Log server (`~/.local/share/opencode/log/opencode.log`):
+```
+level=ERROR message=failed ref=err_...
+error="PlatformError: NotFound: FileSystem.realPath (E:\ProjeckWebCatur\WebCatur)
+       (cause: Error: ENOENT: no such file or directory, lstat 'E:\ProjeckWebCatur\WebCatur')"
+level=WARN  message="failed to initialize fff" error="Failed to init file picker: Invalid path ..."
+```
+
+**Mekanisme**: app memulihkan workspace terakhir → `bootstrapDirectory()`
+(`packages/app/src/context/global-sync/bootstrap.ts:323-330`) memanggil
+`reference.list({location:{directory}})` → server `FileSystem.realPath` gagal
+(ENOENT) → 500. Directory valid (mis. `/tmp`) → 200 `{"data":[]}`.
+
+**Deteksi di mesin user**:
+1. `Test-Path "E:\ProjeckWebCatur\WebCatur"` — folder proyek lama, kemungkinan
+   sudah dipindah/di-rename/dihapus atau drive belum ter-mount.
+2. Cari `ref=err_...` yang sama di log
+   `%USERPROFILE%\.local\share\opencode\log\opencode.log`.
+   - cause `realPath ... ENOENT` → folder memang tidak ada → buka workspace
+     yang benar / hentikan app meminta path mati.
+   - cause `TypeError: undefined is not an object (evaluating 'i.name')` →
+     binary backend stale → `cd packages\desktop && bun run build:backend`.
+3. Isolasi binary vs source: jalankan server dari source
+   (`cd packages/opencode && bun run ./src/index.ts serve --port 4096`) lalu
+   `$env:OPENCODE_DESKTOP_SERVER_URL="http://127.0.0.1:4096"` pada `bun run dev`.
+
+Gap robustness: server sebaiknya membalas 404/graceful untuk direktori yang
+tidak bisa di-resolve, bukan 500 — kandidat PR terpisah.
+
+**Warning Solid lain di log yang sama** (pre-existing, dari commit #16, BUKAN
+PR #17): `toast.tsx:46 computations created outside a createRoot` (×3) dan
+`refcount.ts:13 cleanups created outside a createRoot` — dipicu notifikasi
+`handleSessionIdle` (`notification.tsx:319/340`) dan toast
+`dialog-connect-provider.tsx:723`; potensi leak kecil, layak issue terpisah.
+
+**PR #17 tidak menyentuh jalur ini** — file yang diubah hanya markdown
+renderer session-ui + test + docs; di log user juga tidak ada baris
+`[markdown] worker unavailable`, artinya worker markdown sehat.
