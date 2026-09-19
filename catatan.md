@@ -1496,3 +1496,34 @@ src/global.ts; file: opencode.log) untuk lihat stack PTY di Windows.
 (xdg-basedir → HOME/.local/share). Di sinilah jejak "failed to generate title"
 (Effect.logError di packages/opencode/src/session/prompt.ts) dan error PTY
 akan terlihat.
+
+## Akar "prompt_async failed / pty 500 / file list 500 / reference 500" (2026-09-19): BINARY BACKEND STALE
+
+**Log server user** (`~\.local\share\opencode\log\opencode.log`) menunjukkan satu
+TypeError yang sama membunuh banyak jalur di Windows:
+`TypeError: undefined is not an object (evaluating 'i.name')` — di `resolve`,
+triple-nested `.map`, dipanggil dari FileHttpApi.findFile/list, PtyHttpApi.create,
+Server.listen (fallback), DAN `prompt_async failed ... Die(TypeError)`.
+
+**Kunci**: desktop (dev maupun packaged) TIDAK menjalankan source; ia menjalankan
+**binary backend hasil `bun build --compile`** yang di-stage di
+`packages/desktop/resources/backend/opencode.exe` (packages/desktop/script/backend.ts,
+dipanggil `bun run build:backend`; paths.ts `backendBinaryPath`). Semua frame
+`B:/~BUN/root/chunk-*.js` di log = binary bundel yang STALE (dibangun dari commit lama).
+
+**Bukti source sehat**: di sandbox (source terbaru, Linux) semua endpoint yang 500
+di mesin user kembali 200: `/api/fs/find`, `/api/fs/list`, `/api/reference`,
+`/api/pty` (+ legacy `/find/file`, `/file`, `/session`).
+Catatan: path salah/tak dikenal memang menghasilkan 500 bodi kosong (bukan 404) —
+perilaku router fork, jangan disalahartikan sebagai bug endpoint.
+
+**Solusi user**: `git pull` → `cd packages/desktop && bun run build:backend` →
+jalankan ulang `bun run dev`. Renderer CSP wasm fix (3603743) otomatis aktif di
+dev (vite menyaji index.html dari source); fix notifikasi (c612b03) ikut karena
+main bundle di-rebuild tiap dev start.
+
+**Jika TypeError i.name MASIH muncul setelah rebuild binary dari source terbaru**:
+baru itu bug Windows-specific di source — minta ulang log server (error akan punya
+posisi terbaru; build.ts pakai `minify:false` untuk main/preload, backend dari
+packages/opencode/script/build.ts) dan telusuri `resolve`+`i.name` di
+packages/core/src/shell.ts (Windows-only branch) sebagai kandidat pertama.
