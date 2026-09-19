@@ -71,6 +71,21 @@ export class MessageNotFoundError extends Schema.TaggedErrorClass<MessageNotFoun
   { httpApiStatus: 404 },
 ) {}
 
+/**
+ * The requested location directory is not usable on this server (missing, or a
+ * path component is not a directory). Location services cannot boot for it, so
+ * the request is refused up front instead of dying inside the layer and being
+ * reported as an opaque 500.
+ */
+export class LocationNotFoundError extends Schema.TaggedErrorClass<LocationNotFoundError>()(
+  "LocationNotFoundError",
+  {
+    directory: Schema.String,
+    message: Schema.String,
+  },
+  { httpApiStatus: 404 },
+) {}
+
 export class InvalidCursorError extends Schema.TaggedErrorClass<InvalidCursorError>()(
   "InvalidCursorError",
   { message: Schema.String },

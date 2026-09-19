@@ -1,5 +1,5 @@
 import { createStore, reconcile } from "solid-js/store"
-import { type Accessor, batch, createEffect, createMemo, createRoot, getOwner, onCleanup } from "solid-js"
+import { type Accessor, batch, createEffect, createMemo, createRoot, getOwner, onCleanup, runWithOwner } from "solid-js"
 import { useNavigate, useParams, useSearchParams } from "@solidjs/router"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import type { ServerSDK } from "./server-sdk"
@@ -210,7 +210,7 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
 
 type NotificationState = ReturnType<typeof createServerNotificationState>
 
-function createServerNotificationState(input: {
+export function createServerNotificationState(input: {
   sdk: ServerSDK
   sync: ServerSync
   active: Accessor<boolean>
@@ -227,6 +227,16 @@ function createServerNotificationState(input: {
   const settings = input.settings
   const language = input.language
 
+  // The state is created inside the root that owns it (see `ensure`), but its
+  // event handlers resolve sessions asynchronously, with no reactive scope of
+  // their own. Running those lookups under this owner keeps the directory
+  // context alive for the server it belongs to instead of for the lifetime of
+  // the ref-count map.
+  const owner = getOwner()
+  // `runWithOwner` is typed as `T | undefined` because it shares `runUpdates`
+  // with the queue API, but it returns the callback's value.
+  const withOwner = <T,>(run: () => T): T => (owner ? (runWithOwner(owner, run) as T) : run())
+
   const empty: Notification[] = []
 
   const currentDirectory = input.directory
@@ -237,6 +247,9 @@ function createServerNotificationState(input: {
     createStore({
       list: [] as Notification[],
     }),
+    // The platform is already injected; reading it back from context would make
+    // this state impossible to build outside a component tree (tests).
+    platform,
   )
   const [index, setIndex] = createStore<NotificationIndex>(buildNotificationIndex(store.list))
 
@@ -316,7 +329,7 @@ function createServerNotificationState(input: {
 
   const lookup = async (directory: string, sessionID?: string) => {
     if (!sessionID) return undefined
-    const sync = serverSync().ensureDirSyncContext(directory)
+    const sync = withOwner(() => serverSync().ensureDirSyncContext(directory))
     const session = sync.session.get(sessionID)
     if (session) return session
     return sync.session

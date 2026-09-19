@@ -3,10 +3,12 @@ import {
   createMemo,
   createResource,
   For,
+  getOwner,
   on,
   onCleanup,
   onMount,
   ParentProps,
+  runWithOwner,
   Show,
   untrack,
   type Accessor,
@@ -1160,6 +1162,17 @@ export default function LegacyLayout(props: ParentProps) {
     return root
   }
 
+  // Navigation runs from callbacks and effects that are already finished, so
+  // directory lookups triggered here have no scope of their own to release
+  // them; they borrow the layout's.
+  const layoutOwner = getOwner()
+
+  // `runWithOwner` is typed as `T | undefined` because it shares `runUpdates`
+  // with the queue API, but it returns the callback's value.
+  function withLayoutOwner<T>(run: () => T): T {
+    return layoutOwner ? (runWithOwner(layoutOwner, run) as T) : run()
+  }
+
   async function navigateToProject(directory: string | undefined) {
     if (!directory) return
     const root = projectRoot(directory)
@@ -1186,7 +1199,7 @@ export default function LegacyLayout(props: ParentProps) {
     }
     const openSession = async (target: { directory: string; id: string }) => {
       if (!canOpen(target.directory)) return false
-      const sync = serverSync().ensureDirSyncContext(target.directory)
+      const sync = withLayoutOwner(() => serverSync().ensureDirSyncContext(target.directory))
       if (sync.session.get(target.id)) {
         setStore("lastProjectSession", root, { directory: target.directory, id: target.id, at: Date.now() })
         navigateWithSidebarReset(`/${base64Encode(target.directory)}/session/${target.id}`)
