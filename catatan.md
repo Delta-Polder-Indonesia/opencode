@@ -4,7 +4,8 @@ Tanggal rencana: **19 September 2026**.
 Status: **Tahap 0 sebagian selesai; Tahap 1A dan 1B SELESAI dan tervalidasi di
 Windows 10 x64 nyata — aplikasi Electron terbuka dan UI OpenCode ter-render,
 dengan backend lokal yang dijalankan sendiri oleh aplikasi; Tahap 1C sebagian;
-Tahap 1D belum dimulai**. Lihat bagian [Progres](#progres) untuk bukti per tahap.
+Tahap 1D disiapkan — pipeline packaging tervalidasi offline, artefak installer
+menunggu eksekusi di Windows**. Lihat bagian [Progres](#progres) untuk bukti per tahap.
 
 Yang **belum** diuji pada UI yang sudah hidup: folder picker, chat end-to-end,
 dan kebersihan proses saat keluar (tidak ada `opencode.exe` yatim).
@@ -158,9 +159,17 @@ tersedia, jangan menganggap build desktop Windows telah tervalidasi.
 
 ### 1D. Installer dan penerimaan
 
-- [ ] Pilih tooling packaging (misalnya Electron Builder atau Forge) setelah
+- [x] Pilih tooling packaging (misalnya Electron Builder atau Forge) setelah
       memeriksa kebutuhan native dependency, binary backend, dan lisensinya.
-- [ ] Buat installer Windows x64 yang memuat aset UI lokal dan backend.
+      Electron Builder 26.15.3 (sejak 1A). Diperiksa dan disesuaikan: collector
+      dependency-nya untuk bun menyapu node_modules monorepo (ditangani, lihat
+      progres 2026-09-19); tidak ada native dependency runtime; lisensi MIT.
+- [~] Buat installer Windows x64 yang memuat aset UI lokal dan backend.
+  **Sebagian**: `script/package.ts`, konfigurasi `electron-builder.yml`,
+  dan ikon installer siap; alur packaging tervalidasi offline di Linux
+  (stub Electron dist). Artefak installer sendiri belum ada — kompilasi
+  backend lintas-platform tidak didukung, jadi wajib dijalankan di Windows
+  dengan `bun run package:win`.
 - [ ] Uji install, launch, pilih proyek, chat, terminal, tutup, buka ulang, dan uninstall
       pada lingkungan Windows yang bersih.
 - [ ] Verifikasi path dengan spasi/non-ASCII, folder tidak bisa diakses, provider
@@ -772,9 +781,79 @@ tertutup tes:
 3. Tahap 1D: `electron-builder --win --x64`, lalu uji install → buka lewat ikon →
    pilih folder → chat → terminal → tutup → buka ulang → uninstall pada Windows bersih.
 
----
+#### 2026-09-19 — Tahap 1D disiapkan: pipeline packaging tervalidasi offline
 
-## Arsip catatan teknis sebelumnya
+**Status:** alat packaging siap dan alurnya tervalidasi; **artefak installer
+belum dibuat** — hanya bisa dihasilkan di Windows.
+
+**Perubahan dan file terkait**
+
+| Berkas                                        | Isi                                                                                                                          |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `packages/desktop/script/package.ts` (baru)   | Orkestrator 1D: backend → bundel → `electron-builder`, dengan verifikasi prasyarat dan penolakan lintas-platform             |
+| `packages/desktop/electron-builder.yml`       | `files` menolak `node_modules`; `electronFuses` (runAsNode/NODE_OPTIONS/inspect/file-protocol mati)                          |
+| `packages/desktop/package.json`               | Semua dependensi jadi `devDependencies` (bundel sudah mandiri); `author` + `repository`; `package:win` → `script/package.ts` |
+| `packages/desktop/build/icon.ico`, `icon.png` | Ikon installer 6 ukuran, dibuat dari aset resmi proyek (`packages/ui/.../web-app-manifest-512x512.png`)                      |
+| `.gitignore`                                  | `packages/desktop/release/` tidak masuk Git                                                                                  |
+| `bun.lock`                                    | Mengikuti perpindahan dependensi                                                                                             |
+
+**Temuan penting (tidak terlihat sebelum dijalankan)**
+
+1. **Bundel main terbukti mandiri.** `dist/main/index.cjs` hanya `require`
+   `electron` + builtin Node; preload hanya `electron`. Artinya asar tidak
+   membutuhkan `node_modules` sama sekali.
+2. **electron-builder + bun workspace menyapu node_modules monorepo.** Collector
+   untuk bun memakai traversal file (bun tidak punya CLI dependency tree); saat
+   paket desktop tak punya `dependencies`, ia naik ke root monorepo dan
+   mengumpulkan dependensi root (hasil: asar 107 MB penuh modul mati), dan pada
+   percobaan pertama sempat mencoba **rebuild native `@parcel/watcher`** —
+   jalur yang butuh toolchain build di mesin pengguna. Perbaikan dua lapis:
+   semua dependensi desktop menjadi `devDependencies` (sah karena semuanya
+   di-bundel saat build) dan pola `files: "!**/node_modules/**"`. Hasil: asar
+   **36 MB, 0 entri node_modules**, tidak ada langkah rebuild native.
+3. **Pengaman lintas-platform.** Installer Windows yang berisi binary backend
+   Linux akan rusak secara diam-diam; `script/package.ts` menolak berjalan di
+   luar Windows untuk target rilis (diuji langsung).
+4. **Electron fuses** kini bagian dari packaging: `ELECTRON_RUN_AS_NODE`,
+   `NODE_OPTIONS`, `--inspect`, dan privilege ekstra `file://` dimatikan di
+   binary hasil kemas. Fuses integritas-asar sengaja ditunda ke passes
+   hardening terpisah.
+
+**Verifikasi (perintah dan hasil)**
+
+| Perintah                                                                | Hasil                                                                                                                                  |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `cd packages/desktop && bun test src`                                   | 99 pass / 0 fail                                                                                                                       |
+| `cd packages/desktop && bun run typecheck`                              | bersih (setelah `tsgo -b` di `packages/app`)                                                                                           |
+| `cd packages/desktop && bun run build`                                  | sukses; bundel main diverifikasi mandiri                                                                                               |
+| `bun run build:backend` (linux-x64)                                     | sukses, versi `1.18.31-desktop`; `resources/backend/opencode` (126 MB)                                                                 |
+| `bun run script/verify-backend.ts`                                      | **8/8 lulus** terhadap binary hasil kompilasi                                                                                          |
+| `bun run script/package.ts --linux --dir --skip-*` + stub Electron dist | asar 36 MB, **0 node_modules**, `dist/` + `package.json` lengkap, `resources/backend/opencode` di luar asar, langkah fuses tereksekusi |
+| `bun run script/package.ts` (di Linux)                                  | menolak dengan pesan jelas (pengaman lintas-platform bekerja)                                                                          |
+| `bunx oxlint` / `bunx prettier --check`                                 | bersih                                                                                                                                 |
+
+Smoke packaging memakai stub `electronDist` karena **semua unduhan Electron
+diblokir sandbox** (github.com putus TLS; mirror npmmirror pun tidak stabil),
+jadi unduhan NSIS/winCodeSign tidak mungkin di sini. Elemen yang tervalidasi
+adalah semua yang dikendalikan konfigurasi kita; elemen dari jaringan
+(Electron dist, NSIS) baru tersentuh di Windows.
+
+**Kendala/risiko**
+
+- Artefak installer wajib dibuat di Windows (`bun run package:win`); di sandbox
+  terblokir unduhan, bukan kode.
+- Installer NSIS belum berbahasa (default Inggris) dan **tanpa code signing** —
+  SmartScreen akan memperingatkan. Bukan siap rilis.
+- Auto-update tidak disentuh sama sekali (`--publish never` dipaku di script).
+
+**Langkah berikutnya**
+
+1. Di Windows: `bun run package:win`, lalu uji install → buka lewat ikon →
+   pilih folder → chat → tutup → buka ulang → uninstall.
+2. Verifikasi UI hidup dari Tahap 1B: folder picker, chat end-to-end, terminal,
+   dan **tidak ada `opencode.exe` yatim** setelah keluar.
+
+---
 
 Bagian di bawah dipertahankan sebagai riwayat. Status dan hasil pengujian di
 arsip merujuk sesi/commit yang disebutkan, bukan otomatis hasil pengujian rencana
