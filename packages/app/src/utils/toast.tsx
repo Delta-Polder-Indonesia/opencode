@@ -1,4 +1,5 @@
 import { Icon, type IconProps } from "@opencode-ai/ui/icon"
+import type { JSX } from "solid-js"
 import {
   Toast,
   showToast as showLegacyToast,
@@ -40,8 +41,21 @@ export function dismissToast(toastId: number) {
   return toasterV2.dismiss(toastId)
 }
 
-function resolveIcon(icon: IconProps["name"] | undefined, variant: ToastVariant | undefined) {
+/**
+ * Resolves the v2 toast icon lazily.
+ *
+ * `showToast` runs from async flows — promises, event handlers, effects that
+ * already completed — so there is no owner to create a component under.
+ * Building `<Icon/>` here would run its `onMount` as a computation no root
+ * owns: the development build reports "computations created outside a
+ * `createRoot`" and Solid never disposes it. Returning a factory defers the
+ * element until the toast renders it inside its own reactive scope.
+ */
+export function resolveIcon(
+  icon: IconProps["name"] | undefined,
+  variant: ToastVariant | undefined,
+): (() => JSX.Element) | undefined {
   const name = icon ?? (variant === "success" ? "check" : undefined)
   if (!name) return
-  return <Icon name={name} />
+  return () => <Icon name={name} />
 }

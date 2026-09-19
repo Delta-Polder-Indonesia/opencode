@@ -167,10 +167,21 @@ export interface ToastV2Action {
   onClick: "dismiss" | (() => void)
 }
 
+/**
+ * A toast icon may be supplied as a factory.
+ *
+ * Callers usually show a toast from an event handler or a promise, where there
+ * is no reactive owner: building the element there creates computations no root
+ * owns (dev-solid warns "created outside a `createRoot`" and never disposes
+ * them). A factory is resolved while the toast renders, inside the toast's own
+ * scope.
+ */
+export type ToastV2Icon = JSX.Element | (() => JSX.Element)
+
 export interface ToastV2Options {
   title?: string
   description?: string
-  icon?: JSX.Element
+  icon?: ToastV2Icon
   variant?: "default" | "success" | "error" | "loading"
   duration?: number
   persistent?: boolean
@@ -223,7 +234,10 @@ function publishToastV2(entry: ActiveToastV2) {
   toast(entry.options.title ?? "", {
     id: entry.id,
     description: entry.options.description,
-    icon: entry.options.icon,
+    // solid-sonner renders the icon through Solid's JSX insert, which resolves
+    // a function value inside the toast component's scope; its type only knows
+    // about elements.
+    icon: entry.options.icon as JSX.Element | undefined,
     action: entry.actions,
     closeButton: true,
     duration: entry.options.persistent ? Number.POSITIVE_INFINITY : entry.options.duration,

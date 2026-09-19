@@ -9,14 +9,14 @@ import { eq } from "drizzle-orm"
 import { Effect, Layer, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { HttpApiMiddleware } from "effect/unstable/httpapi"
-import { InvalidRequestError, SessionNotFoundError } from "@opencode-ai/protocol/errors"
-import type { LocationServices } from "../location"
+import { InvalidRequestError, LocationNotFoundError, SessionNotFoundError } from "@opencode-ai/protocol/errors"
+import { ensureDirectory, type LocationServices } from "../location"
 
 export class SessionLocationMiddleware extends HttpApiMiddleware.Service<
   SessionLocationMiddleware,
   { provides: LocationServices }
 >()("@opencode/HttpApiSessionLocation", {
-  error: [InvalidRequestError, SessionNotFoundError],
+  error: [InvalidRequestError, LocationNotFoundError, SessionNotFoundError],
 }) {}
 
 const decodeSessionID = Schema.decodeUnknownEffect(SessionV2.ID)
@@ -50,6 +50,11 @@ export const sessionLocationLayer = Layer.effect(
             sessionID,
             message: `Session not found: ${sessionID}`,
           })
+
+        // The session is known, but its workspace may be gone (folder deleted
+        // or renamed). Report that as a missing location instead of letting the
+        // location layer die while building a 500.
+        yield* ensureDirectory(row.directory)
 
         return yield* effect.pipe(
           Effect.provide(

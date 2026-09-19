@@ -1639,3 +1639,113 @@ PR #17): `toast.tsx:46 computations created outside a createRoot` (×3) dan
 **PR #17 tidak menyentuh jalur ini** — file yang diubah hanya markdown
 renderer session-ui + test + docs; di log user juga tidak ada baris
 `[markdown] worker unavailable`, artinya worker markdown sehat.
+
+## Follow-up PR #17 (2026-09-19, `arena/01a0ba8c-opencode`): lokasi 404 + owner warning — SELESAI
+
+Dua follow-up dari brief sesi ini dikerjakan di cabang baru
+(`arena/01a0ba8c-opencode`); cabang PR #17 (`arena/01a0b9f3-opencode`) tidak
+disentuh. Keduanya sudah diperbaiki **dengan test yang menyertainya**.
+
+### Item 1 — direktori yang tidak bisa di-resolve: 500 → 404
+
+**Akar masalah** (dari catatan di atas): `packages/core/src/filesystem.ts:65`
+men-`Effect.orDie`-kan `fs.realPath`, jadi direktori hilang = *defect* → layer
+lokasi gagal dibangun → `500` untuk tiap endpoint ber-scope lokasi, dan
+`filesystem/search.ts:136` menulis WARN "failed to initialize fff" berulang.
+
+**Perbaikan** (semua di jalur HTTP, bukan di core):
+- `packages/protocol/src/errors.ts`: `LocationNotFoundError` (`_tag`
+  `LocationNotFoundError`, `directory`, `message`, `httpApiStatus: 404`).
+- `packages/server/src/location.ts`: `ensureDirectory(directory)` memakai
+  `stat` via `Effect.callback`. Hanya `ENOENT`/`ENOTDIR` yang jadi 404; error
+  lain (izin, I/O) tetap *defect* seperti sebelumnya. `LocationMiddleware`
+  mendeklarasikan `error: LocationNotFoundError`, dan `layer` memanggil
+  `ensureDirectory(ref.directory)` **sebelum** layer lokasi dibangun — jadi
+  tidak ada service lokasi yang pernah boot untuk direktori mati (fff tidak
+  diinisialisasi → WARN hilang).
+- `packages/server/src/middleware/session-location.ts`: `ensureDirectory(row.directory)`
+  setelah baris sesi ditemukan, supaya workspace yang dihapus/di-rename juga
+  balas 404 (bukan 500) saat riwayat sesi dibuka.
+
+**Bukti** (`packages/opencode/test/server/httpapi-location-missing-directory.test.ts`,
+6 test lulus; jalankan dari `packages/opencode`):
+```
+bun test --timeout 120000 test/server/httpapi-location-missing-directory.test.ts
+  ✓ reference: direktori hilang → 404 (bukan 500), body `LocationNotFoundError`
+  ✓ reference: direktori valid → tetap 200 `{location:{...},data:[]}`
+  ✓ matriks endpoint ber-scope lokasi (`/api/fs/list`, `/api/location`, `/api/agent`,
+    `/api/command`, `/api/skill`, `/api/pty`) → semuanya 404
+  ✓ `/path` (grup instance) → tidak 500 (200 `{home,state,config,worktree,directory}`)
+  ✓ sesi dengan workspace yang dihapus → 404, bukan 500
+  ✓ `ensureDirectory` gagal bertipe untuk path yang parent-nya file
+```
+Curl ke server dari source (`bun run ./src/index.ts serve --port 4396`) dengan
+header `x-opencode-directory: /nonexistent/xyz`: `/api/reference` →
+`404 {"_tag":"LocationNotFoundError",...}`, `/api/fs/list` → 404; direktori
+valid → 200. Log server bersih, tidak ada WARN fff.
+
+**Catatan `/api/path`**: brief menyebut `/api/path`; di build ini rute itu
+**tidak ada**. Rute aslinya `/path` (grup instance, tanpa prefix `/api`), dan
+permintaan ke path yang tak dikenal jatuh ke catch-all UI (`uiRoute`) sehingga
+menjawab 500 kosong — itulah 500 yang terlihat di diagnostik, bukan kegagalan
+lokasi. Rute `/path` sendiri dijawab lewat *workspace routing context* (bukan
+middleware lokasi) dan tidak pernah 500; app v2 memang tidak memanggilnya
+(`loadPathQuery` mengembalikan nilai statis untuk protokol v2). Test ke-4 di
+atas mengunci sifat "tidak 500" itu.
+
+### Item 2 — warning Solid "created outside a `createRoot`"
+
+Dua sumber, dua perbaikan:
+
+1. **`resolveIcon` (toast) — `packages/app/src/utils/toast.tsx`**:
+   `resolveIcon(icon, variant)` sekarang mengembalikan *factory* `() => JSX.Element`
+   (default sukses: `"check"`), dan
+   `packages/ui/src/v2/components/toast-v2.tsx` menerima
+   `ToastV2Icon = JSX.Element | (() => JSX.Element)`; sonner memanggil factory
+   itu di scope reaktifnya sendiri, jadi komputasi ikon tidak lagi dibuat di
+   luar root. Test: `packages/app/test-browser/toast-icon-owner.test.ts`
+   (2 lulus) — ikon muncul di `[data-testid="toast-v2-<id>"] [data-component="icon"]`,
+   dan test "defers…" gagal bila `resolveIcon` kembali mengembalikan elemen.
+
+2. **`refcount.ts` → `notification.tsx`/`layout.tsx`**: peta refcount ditulis
+   ulang (`createRefCountMap(create, remove?, identity?)`) dengan hitungan per
+   *owner*; `onCleanup` hanya didaftarkan bila ada owner aktif, dan lookup tanpa
+   owner ditahan agar tidak membersihkan resource milik orang lain
+   (`packages/app/src/utils/refcount.test.ts`, 4 lulus). Pemanggilnya kini
+   menjalankan lookup di bawah owner yang benar:
+   `packages/app/src/context/notification.tsx` (`owner = getOwner()` +
+   `withOwner`, membungkus `ensureDirSyncContext` di `lookup`;
+   `createServerNotificationState` juga diekspor dan memakai
+   `platformOverride` milik `persisted` agar bisa diuji di luar provider) dan
+   `packages/app/src/pages/layout.tsx` (`layoutOwner` + `withLayoutOwner`,
+   membungkus `ensureDirSyncContext` di `openSession`).
+   `runWithOwner` diketik `T | undefined`, jadi helper-nya memakai cast `as T`.
+   Test: `packages/app/test-browser/notification-owner.test.ts` (1 lulus,
+   5 expect) — memutar `session.idle` dan memastikan `ensureDirSyncContext`
+   dipanggil dengan owner non-null. Kedua test ini **terbukti sensitif**:
+   mengembalikan perbaikan masing-masing membuatnya gagal (owner `null`,
+   `Export named 'resolveIcon' not found`, atau tipe kembalian elemen).
+
+### Hasil uji lengkap sesi ini
+
+```
+packages/app   bun run test          → unit 729 lulus / 0 gagal / 2929 expect / 104 file
+                                       browser 46 lulus / 0 gagal / 118 expect / 17 file
+packages/ui    bun test src --only-failures → 27 lulus / 0 gagal / 4 file
+packages/session-ui bun run test     → 90 lulus / 0 gagal / 199 expect / 15 file
+packages/desktop    bun test src     → 114 lulus / 0 gagal / 293 expect / 12 file
+packages/opencode   typecheck (tsgo) → bersih untuk berkas yang diubah
+                                       (`src/image/image.ts` punya error lama: modul
+                                       wasm photon-node tidak ter-resolve — bukan dari sesi ini)
+prettier 3.6.2 --check               → 12 berkas berubah bersih
+oxlint 1.60.0                        → 0 error; 3 warning lama di `layout.tsx`
+                                       (`reconcile`/`retry` tak terpakai, `serverSDK().url`)
+```
+
+### Sisa / tidak dikerjakan
+
+- Verifikasi runtime di **Windows user** (log `bun run dev` bersih) tetap tugas
+  manual: sandbox tidak bisa menjalankan Electron. Yang bisa dipastikan dari
+  sini: perilaku HTTP di atas + test regresi.
+- Opsi lanjutan dari sesi sebelumnya yang belum diambil: recovery worker
+  markdown (`disabled` di-reset) bila terjadi kegagalan transien.
