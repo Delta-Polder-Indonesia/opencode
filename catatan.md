@@ -1574,8 +1574,8 @@ aktif.
 → UI mati di SessionRouteErrorBoundary session.tsx:168. Data di store SEHAT
 (streaming-answer.test.ts + test BASELINE).
 
-**Opsi fix — (1) SUDAH diimplementasikan di PR #17 (branch
-`arena/01a0b9f3-opencode`, commit 7321112):** fallback sinkron di jalur
+**Opsi fix — (1) SUDAH DIIMPLEMENTASIKAN DAN DI-MERGE ke `main` sebagai
+squash commit `60a2939` (PR #17, 2026-09-19):** fallback sinkron di jalur
 streaming saat resource error — `markdown.tsx` cek `projectionValue.error`
 dulu lalu pakai `pendingProjection(text)`; `.catch` loader html yang sudah ada
 menyelesaikan ke teks escaped (persis jalur statis). Jalur sehat tak berubah;
