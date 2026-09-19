@@ -1352,3 +1352,47 @@ cd packages/core && bun test && bun run typecheck      # ~35s + ~10s
 cd ../opencode && bun run script/httpapi-exercise.ts --mode coverage \
   --fail-on-missing --fail-on-skip                     # 220 skenario
 ```
+
+## Fix akar masalah "balasan AI tak tampil di chat desktop" (2026-09-19, commit 460ffd6)
+
+**Gejala**: di chat, balasan AI tidak pernah muncul (bahkan "hallo"); notifikasi
+"sesi telah selesai" muncul; pesan user tampil (optimistic).
+
+**Akar masalah (terbukti empiris terhadap backend fork yang jalan)**:
+1. Backend fork melayani `/global/health` = `{healthy:true}` dan `/api/health` =
+   `{healthy:true}` (tanpa `pid`) → `detectServerProtocol` (packages/app/src/utils/
+   server-protocol.ts) selalu memilih **v1** → UI berlangganan stream global legacy
+   `/global/event`, yang mengirim event **tanpa field `directory` level-atas** → semua
+   event jatuh ke bucket "global" dan tidak pernah diteruskan ke store direktori
+   proyek yang dibaca timeline.
+2. Lebih mendasar lagi: transport event di server ini mengirim payload di bawah
+   kunci **`properties`** (`/event` → `{id,type,properties}`; `/global/event` →
+   `{payload:{...}}`), sedangkan `adaptServerEvent` (packages/app/src/context/
+   server-sdk.tsx) hanya membaca `event.data` → `properties` hasil adaptasi **undefined
+   untuk SEMUA event** → reducer legacy maupun applyV2 tidak pernah mengisi store.
+   Notifikasi tetap muncul karena hanya butuh `event.type`; pesan user tampil karena
+   optimistic; histori tampil karena di-load via HTTP.
+
+**Perbaikan (commit 460ffd6)**:
+- `detectServerProtocol`: `/api/health` yang menjawab JSON (apa pun bentuknya) → **v2**
+  (namespace API v2 = otoritatif); fallback `/global/health` hanya untuk server yang
+  pra-dating namespace `/api/*`.
+- `adaptServerEvent`: normalisasi sekali di awal — payload `properties` → `data`
+  (termasuk pada `current`), sehingga reducer legacy (`event.properties`) DAN
+  applyV2 (`current.data`) sama-sama melihat payload terisi.
+- Tes: matriks pemilihan protokol diperbarui + tes baru yang mengunci normalisasi.
+
+**Bukti empiris** (backend diag 127.0.0.1:4099, provider palsu):
+- `/api/event` → shape v2 `{id,type,data}`; `/event` → `{id,type,properties}`;
+  `/global/event` → `{payload}` tanpa directory.
+- `detectServerProtocol(backend nyata)` = **v2** (dengan fix).
+- Suite: app unit 728/0 (`bun run test:unit` — WAJIB `--conditions=solid`, lihat
+  catatan di bawah), typecheck app 0 error, desktop 111/0, typecheck desktop 0 error.
+
+**Kunci lingkungan test app**: `bun test` polos di packages/app sekarang GAGAL massal
+dengan `Export named 'use' not found in module ... solid-js/web/dist/server.js` —
+bukan regresi kode; resolusi kondisi modul. Jalankan **`bun run test:unit`**
+(= `bun test --conditions=solid --only-failures --preload ./happydom.ts ./src`).
+
+**Status**: BELUM terverifikasi di Windows nyata — menunggu user uji ulang
+(dev mode, bukan installer).
