@@ -934,6 +934,17 @@ seluruh jawaban (tanpa delta) atau menaruh jawaban di reasoning, UI tidak punya
 teks untuk ditampilkan sebelum selesai — perlu dikonfirmasi model apa yang
 dipakai dan apakah jawaban baru muncul di akhir giliran.
 
+**Lanjutan (jawaban pengguna: "halo"/"apa kabar" pun jawabannya tidak
+kelihatan; model gratis lewat router).** Jalur data renderer dikunci tes baru
+(\`streaming-answer.test.ts\`): urutan event hasil rekaman diputar lewat
+reducer yang sama dipakai aplikasi — part teks tumbuh live, renderable di
+tengah streaming, dan utuh setelah settle (app 726 pass / 0 fail). Dengan
+demikian sisi server dan sisi data sudah terbukti; tersangka tersisa ada di
+runtime pengguna (error render yang kini terekam di desktop.log) atau
+perilaku router/model-nya. Net keamanan dari perubahan default reasoning:
+bila router menaruh jawaban ke dalam part reasoning, jawaban kini tetap
+bisa ditemukan di lipatan thinking yang bisa dibuka.
+
 ---
 
 ## Arsip catatan teknis sebelumnya
