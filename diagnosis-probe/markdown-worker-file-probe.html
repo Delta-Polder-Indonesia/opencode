@@ -1,0 +1,156 @@
+<!doctype html>
+<!--
+  PROBE DIAGNOSIS (bukan kode aplikasi).
+
+  Buka file ini LANGSUNG dari disk (double-click) di Chrome/Chromium —
+  BUKAN lewat dev server — agar halaman berjalan di file:// (origin "null"),
+  kondisi yang dihadapi build desktop LAMA sebelum skema oc://renderer.
+
+  Halaman ini memakai CSP yang SAMA PERSIS dengan packages/desktop/index.html
+  dan mencoba hal yang sama persis dengan markdown-worker.ts:
+    new Worker("<url worker>", { type: "module" })
+  lalu menampilkan:
+    1. origin halaman + CSP,
+    2. pesan error konstruksi Worker secara verbatim (atau success),
+    3. hasil fetch() ke file worker (perilaku origin/CSP terpisah dari Worker),
+    4. simulasi kaskade modul markdown-worker.ts:
+       fail() -> disabled -> getWorker() throw MarkdownWorkerUnavailableError
+       (persis kenapa seluruh konten session diganti ErrorBoundary).
+
+  File worker pendamping: markdown-worker-file-probe.worker.js (harus ada di
+  folder yang sama).
+-->
+<head>
+  <meta charset="utf-8" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://127.0.0.1:* http://localhost:*; font-src 'self' data:; media-src 'self' blob:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+  />
+  <title>Probe: markdown worker di file:// (kondisi desktop lama)</title>
+  <style>
+    body { font: 14px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; margin: 24px; color: #111; }
+    h1 { font-size: 16px; }
+    section { border: 1px solid #ccc; border-radius: 6px; padding: 12px 16px; margin: 12px 0; }
+    h2 { font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .05em; color: #555; }
+    pre { white-space: pre-wrap; word-break: break-all; margin: 6px 0 0; padding: 8px; background: #f6f6f6; border-radius: 4px; }
+    .ok { color: #0a7a2f; font-weight: 600; }
+    .fail { color: #b00020; font-weight: 600; }
+    .warn { color: #8a6d00; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Probe: worker markdown di halaman <code>file://</code></h1>
+  <section><h2>1. Lingkungan</h2><div id="env">…</div></section>
+  <section><h2>2. Konstruktor Worker (markdown-worker.ts:120)</h2><div id="ctor">…</div></section>
+  <section><h2>3. fetch() ke file worker</h2><div id="fetch">…</div></section>
+  <section><h2>4. Kaskade modul (apa yang dialami Markdown)</h2><div id="cascade">…</div></section>
+  <section><h2>5. "Kolom chat" tersimulasi</h2><div id="chat"></div></section>
+
+  <script>
+    // Mirip bentuk class di packages/session-ui/src/components/markdown-worker.ts
+    class MarkdownWorkerUnavailableError extends Error {}
+
+    const WORKER_FILE = new URL("./markdown-worker-file-probe.worker.js", location.href).href
+    const out = (id, html) => { document.getElementById(id).innerHTML = html }
+    const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+
+    // ---- state modul (mirip markdown-worker.ts) ----
+    let worker = undefined
+    let disabled = undefined
+
+    const fail = (message) => {
+      disabled = new Error(message)
+      if (worker) worker.terminate()
+      worker = undefined
+    }
+
+    function getWorker() {
+      if (worker) return worker
+      if (disabled) throw new MarkdownWorkerUnavailableError(disabled.message)
+      try {
+        worker = new Worker(WORKER_FILE, { type: "module" })
+      } catch (error) {
+        disabled = error instanceof Error ? error : new Error(String(error))
+        throw new MarkdownWorkerUnavailableError(disabled.message)
+      }
+      worker.onerror = (event) => fail(event.message || "Markdown highlighting worker failed")
+      worker.onmessageerror = () => fail("Markdown worker response failed")
+      return worker
+    }
+
+    // ---- 1. identitas lingkungan ----
+    const cspMeta = document.querySelector('meta[http-equiv="Content-Security-Policy"]')
+    out("env",
+      "location.href: <b>" + esc(location.href) + "</b><br>" +
+      "location.origin: <b>" + esc(location.origin) + "</b> " +
+      (location.origin === "null"
+        ? '<span class="fail">(opaque — sama seperti build desktop lama)</span>'
+        : '<span class="warn">(bukan file:// — probe ini harus dibuka dari disk!)</span>') +
+      "<br>browser: " + esc(navigator.userAgent) +
+      "<br>CSP meta (persis dari packages/desktop/index.html):<pre>" + esc(cspMeta ? cspMeta.getAttribute("content") : "(tidak ada)") + "</pre>"
+    )
+
+    // ---- 2. coba konstruktor Worker (persis markdown-worker.ts:120) ----
+    try {
+      getWorker()
+      out("ctor",
+        '<span class="ok">WORKER HIDUP</span><br><pre>new Worker("' + esc(WORKER_FILE) + '", { type: "module" }) berhasil — lingkungan ini BUKAN kondisi yang gagal (origin valid / CSP mengizinkan).</pre>'
+      )
+      worker.onmessage = () => { worker.terminate(); worker = undefined }
+      worker.postMessage("ping")
+    } catch (error) {
+      out("ctor",
+        '<span class="fail">KONSTRUKTOR WORKER GAGAL</span> (ini yang terjadi di build desktop lama)<br>' +
+        "type: <b>" + esc(error.constructor.name) + "</b><br>" +
+        "name: <b>" + esc(error.name) + "</b><br>" +
+        "pesan verbatim:<pre>" + esc(error.message) + "</pre>" +
+        "stack:<pre>" + esc(error.stack || "(tidak ada)") + "</pre>"
+      )
+    }
+
+    // ---- 3. fetch() ke file worker (perilaku origin/CSP terpisah dari Worker) ----
+    fetch(WORKER_FILE, { mode: "no-cors" })
+      .then((r) => out("fetch", '<span class="ok">fetch() OK</span> — status: ' + r.status + " (type: " + r.type + ")"))
+      .catch((e) => out("fetch", '<span class="fail">fetch() GAGAL</span><pre>' + esc(e && e.message || e) + "</pre>"))
+
+    // ---- 4. simulasi kaskade modul apa pun jalur gagalnya ----
+    setTimeout(() => {
+      // Jika konstruktor gagal, `disabled` sudah terisi (fail-path ctor di atas).
+      // Jika konstruksi sukses, paksa simulasi mati-mid-stream agar kaskade terlihat.
+      if (!disabled) fail("simulated worker crash: onig wasm failure")
+
+      const chatEl = document.getElementById("chat")
+      chatEl.textContent = "Halo, ini jawaban " // teks yang sempat ter-render (membeku)
+
+      // "delta berikutnya" = apa yang dilakukan store saat streaming berlanjut
+      let rendered = false
+      let surfaced = undefined
+      try {
+        // Mirip loader resource `projection` (markdown-worker.ts:68) yang
+        // dipanggil setiap delta oleh markdown.tsx:380-389.
+        getWorker()
+        chatEl.textContent = "Halo, ini jawaban lengkap." // delta baru
+        rendered = true
+      } catch (error) {
+        surfaced = error
+        // Markdown tidak bisa menangkapnya -> naik ke SessionRouteErrorBoundary
+        // (packages/app/src/pages/session.tsx:168) -> seluruh konten diganti fallback.
+        chatEl.innerHTML =
+          '<span class="warn">[SessionRouteErrorBoundary aktif] seluruh konten session digantikan fallback:</span><br>' +
+          "ErrorPage: <b>" + esc(surfaced.constructor.name) + ": " + esc(surfaced.message) + "</b>"
+      }
+
+      out("cascade",
+        "1. fail() menyetel <b>disabled</b> (flag modul, persisten — sekali mati, selalu mati).<br>" +
+        "2. delta berikutnya: <code>projectMarkdown()</code> -> <code>getWorker()</code> -> " +
+        '<b>' + (surfaced ? '<span class="fail">THROW</span>' : '<span class="ok">OK</span>') + "</b>: " +
+        (surfaced ? esc(surfaced.constructor.name) + ": " + esc(surfaced.message) : "-") + "<br>" +
+        "3. resource <code>projection</code> error -> <code>projection.latest</code> (markdown.tsx:393/406/497) re-throw.<br>" +
+        "4. " + (surfaced
+          ? '<span class="fail">ErrorBoundary mengganti SELURUH konten session</span> — teks jawaban hilang dari tampilan (padahal datanya ada di store).'
+          : '<span class="ok">tidak ada error — teks ter-render normal</span> (lingkungan sehat).') +
+        "<br>5. delta baru " + (rendered ? "ter-render." : '<b>TIDAK</b> ter-render.')
+      )
+    }, 300)
+  </script>
+</body>

@@ -53,6 +53,7 @@ type RenderResult = {
 }
 
 const renderedCodeTokens = new WeakMap<HTMLDivElement, RenderedCodeState>()
+let warnedWorkerUnavailable = false
 
 function escape(text: string) {
   return text
@@ -377,7 +378,7 @@ export function Markdown(
   const activeCodeKeys = new Set<string>()
   const completedCode = new Map<string, Extract<RenderedBlock, { mode: "code" }>>()
   let streamed = false
-  const [projection] = createResource(
+  const [projectionValue] = createResource(
     () => {
       if (isServer) return
       const live = local.streaming ?? false
@@ -388,9 +389,26 @@ export function Markdown(
     (src) => projectMarkdown(src.key, src.text, src.live),
     { initialValue: pendingProjection("") },
   )
+  // The projection resource errors when the markdown worker is unavailable
+  // (constructor failure, or the worker died mid-stream) and Solid rethrows
+  // that error from the resource accessor/`latest`. Reading it there used to
+  // kill the whole Markdown component — and, through the session error
+  // boundary, the entire session content (the answer text vanished even
+  // though the store still has it). Instead, fall back to a local pending
+  // projection so the text keeps rendering as plain text (highlighted code
+  // degrades to plain).
+  const unavailableProjection = () => {
+    if (!warnedWorkerUnavailable) {
+      warnedWorkerUnavailable = true
+      const error = projectionValue.error
+      console.warn("[markdown] worker unavailable, rendering plain-text fallback", error)
+    }
+    return pendingProjection(local.text)
+  }
   const currentProjection = () => {
     if (!(local.streaming ?? false) && !streamed) return completedProjection(local.text)
-    const value = projection.latest
+    if (projectionValue.error) return unavailableProjection()
+    const value = projectionValue()
     if (value?.text === local.text) return value
     if (value?.text) return value
     return pendingProjection(local.text)
@@ -403,7 +421,12 @@ export function Markdown(
           key: local.cacheKey,
           projection: pendingProjection(local.text),
         }
-      const value = !(local.streaming ?? false) && !streamed ? completedProjection(local.text) : projection.latest
+      const value =
+        !(local.streaming ?? false) && !streamed
+          ? completedProjection(local.text)
+          : projectionValue.error
+            ? unavailableProjection()
+            : projectionValue()
       if (!value || value.text !== local.text) return
       return {
         text: local.text,

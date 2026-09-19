@@ -1527,3 +1527,115 @@ baru itu bug Windows-specific di source — minta ulang log server (error akan p
 posisi terbaru; build.ts pakai `minify:false` untuk main/preload, backend dari
 packages/opencode/script/build.ts) dan telusuri `resolve`+`i.name` di
 packages/core/src/shell.ts (Windows-only branch) sebagai kandidat pertama.
+
+## Diagnosis "teks balasan AI tidak pernah tampil" (2026-09-19): WORKER MARKDOWN TIDAK TERSEDIA → `Markdown` MATI
+
+**Laporan lengkap: `DIAGNOSIS-markdown-worker.md`** (a/b/c + bukti + opsi fix).
+**Repro runtime: `packages/session-ui/src/components/markdown-worker-unavailable.repro.test.tsx`** —
+jalankan `cd packages/session-ui && bun test --conditions=browser src/components/markdown-worker-unavailable.repro.test.tsx` →
+**7/7 lulus** (suite penuh 90/90).
+
+**Akar (bukti kode + runtime):** `pendingBlocks()` BUKAN titik kehilangan.
+Saat worker tidak tersedia, `getWorker()` (markdown-worker.ts:116-124) throw
+sinkron (konstruktor gagal ATAU flag `disabled` dari `fail()` L200-215 —
+persisten di level modul) → loader resource `projection` (markdown.tsx:380-389;
+`projectMarkdown` markdown-worker.ts:68) error → getter `resource.latest`
+Solid 1.9.10 **melempar** error resource → bacaan `projection.latest` di
+markdown.tsx:393 (`currentProjection`), :406 (source `html`, mati saat mount),
+:497-499 (effect, mati di delta berikutnya saat mid-stream) re-throw →
+`SessionRouteErrorBoundary` (packages/app/src/pages/session.tsx:168) mengganti
+SELURUH konten session dengan ErrorPage/fallback → teks tidak pernah tampil.
+Asimetri pembuktian: jalur non-streaming TIDAK memakai `projection` (pakai
+`completedProjection` + catch → fallback teks escaped) → tool output/riwayat
+tetap terlihat (test CONTROL).
+
+**(a) Di mana:** web (http same-origin, tanpa CSP di packages/app) = tidak
+terjadi karena origin; desktop dev (`http://127.0.0.1:4455`) = tidak terjadi;
+**desktop packaged build LAMA (`file://` + `base:"./"`) = terjadi 100%**
+(origin "null" → `new Worker` throw SecurityError). **Kode SAAT INI sudah
+menghindari file://** — renderer disajikan via skema `oc://renderer`
+(standard+secure+corsEnabled; renderer-protocol.ts, main/index.ts:69) sehingga
+worker same-origin dan CSP `'self'` membolehkannya. Sisa risiko packaged
+sekarang: aset worker hilang dari asar (error event worker → `fail()` → mati di
+delta pertama) atau error top-level modul worker. Varian runtime (onerror,
+mis. WASM shiki) bisa menyerang SEMUA lingkungan: teks membeku lalu boundary
+aktif.
+
+**(b) Console:** bisa HAMPIR BERSIH — error ctor di-catch di markdown-worker.ts:121,
+`onerror`→`fail()` sunyi, `MarkdownWorkerUnavailableError` ditangkap boundary
+(bukan Uncaught). Sinyal andal: Sentry `MarkdownWorkerUnavailableError`
+(error.tsx:315) + UI ErrorPage; untuk build lama/CSP: `Failed to construct
+'Worker': Script at 'file:///…' cannot be loaded from an origin of 'null'` /
+`Refused to create a worker … script-src`.Snippet log sementara ada di laporan
+§3. CSP diperbaiki HANYA jika console benar-benar menampilkan violation CSP.
+
+**(c) Titik kehilangan teks:** throw awal `getWorker()` markdown-worker.ts:116-124
+→ re-throw di pembacaan `projection.latest` markdown.tsx:393/406/497-499
+→ UI mati di SessionRouteErrorBoundary session.tsx:168. Data di store SEHAT
+(streaming-answer.test.ts + test BASELINE).
+
+**Opsi fix — (1) SUDAH diimplementasikan di PR #17 (branch
+`arena/01a0b9f3-opencode`, commit 7321112):** fallback sinkron di jalur
+streaming saat resource error — `markdown.tsx` cek `projectionValue.error`
+dulu lalu pakai `pendingProjection(text)`; `.catch` loader html yang sudah ada
+menyelesaikan ke teks escaped (persis jalur statis). Jalur sehat tak berubah;
+satu `console.warn` sekali-per-process menandai fallback. Test regresi:
+`markdown-worker-unavailable.repro.test.tsx` (7/7; 2 baseline + 4 regression
++ 1 kontrol; suite session-ui 90/90, app 727/727, tsgo bersih; juga lulus di
+mesin Windows user, bun 1.4.2). Opsi tersisa bila perlu: (2) recovery worker
+(reset `disabled`) untuk kegagalan transien; (3) perbaikan aset worker di
+packaged hanya jika console menunjuk kegagalan load; (4) CSP hanya jika
+terbukti violation.
+
+**Probe:** `diagnosis-probe/markdown-worker-file-probe.html` (+ `.worker.js`) —
+buka dari disk di Chrome untuk melihat SecurityError `file://` verbatim +
+kaskade modul (CSP meta = persis packages/desktop/index.html).
+
+## "reference 500" di desktop user (2026-09-19): DIREKTORI WORKSPACE TIDAK BISA DI-RESOLVE
+
+Log console desktop dev user (renderer 127.0.0.1:4455, backend 127.0.0.1:4096)
+dibanjiri: `GET /api/reference?directory=E:\ProjeckWebCatur\WebCatur → 500`.
+
+**Direproduksi dari SOURCE di sandbox** (server dari source, bukan binary —
+`bun run ./src/index.ts serve`), jadi ini BUKAN sekadar "binary stale":
+```
+curl "/api/reference?directory=E%3A%5CProjeckWebCatur%5CWebCatur"  -> HTTP 500
+```
+Log server (`~/.local/share/opencode/log/opencode.log`):
+```
+level=ERROR message=failed ref=err_...
+error="PlatformError: NotFound: FileSystem.realPath (E:\ProjeckWebCatur\WebCatur)
+       (cause: Error: ENOENT: no such file or directory, lstat 'E:\ProjeckWebCatur\WebCatur')"
+level=WARN  message="failed to initialize fff" error="Failed to init file picker: Invalid path ..."
+```
+
+**Mekanisme**: app memulihkan workspace terakhir → `bootstrapDirectory()`
+(`packages/app/src/context/global-sync/bootstrap.ts:323-330`) memanggil
+`reference.list({location:{directory}})` → server `FileSystem.realPath` gagal
+(ENOENT) → 500. Directory valid (mis. `/tmp`) → 200 `{"data":[]}`.
+
+**Deteksi di mesin user**:
+1. `Test-Path "E:\ProjeckWebCatur\WebCatur"` — folder proyek lama, kemungkinan
+   sudah dipindah/di-rename/dihapus atau drive belum ter-mount.
+2. Cari `ref=err_...` yang sama di log
+   `%USERPROFILE%\.local\share\opencode\log\opencode.log`.
+   - cause `realPath ... ENOENT` → folder memang tidak ada → buka workspace
+     yang benar / hentikan app meminta path mati.
+   - cause `TypeError: undefined is not an object (evaluating 'i.name')` →
+     binary backend stale → `cd packages\desktop && bun run build:backend`.
+3. Isolasi binary vs source: jalankan server dari source
+   (`cd packages/opencode && bun run ./src/index.ts serve --port 4096`) lalu
+   `$env:OPENCODE_DESKTOP_SERVER_URL="http://127.0.0.1:4096"` pada `bun run dev`.
+
+Gap robustness: server sebaiknya membalas 404/graceful untuk direktori yang
+tidak bisa di-resolve, bukan 500 — kandidat PR terpisah.
+
+**Warning Solid lain di log yang sama** (pre-existing, dari commit #16, BUKAN
+PR #17): `toast.tsx:46 computations created outside a createRoot` (×3) dan
+`refcount.ts:13 cleanups created outside a createRoot` — dipicu notifikasi
+`handleSessionIdle` (`notification.tsx:319/340`) dan toast
+`dialog-connect-provider.tsx:723`; potensi leak kecil, layak issue terpisah.
+
+**PR #17 tidak menyentuh jalur ini** — file yang diubah hanya markdown
+renderer session-ui + test + docs; di log user juga tidak ada baris
+`[markdown] worker unavailable`, artinya worker markdown sehat.
