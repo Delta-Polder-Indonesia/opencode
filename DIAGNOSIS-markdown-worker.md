@@ -224,3 +224,54 @@ Sisa opsi (jika masih dibutuhkan setelah bukti lapangan):
   `new Worker(file://…)` dan menampilkan pesan error aslinya, lalu mensimulasikan
   kaskade modul (`fail()` → `disabled` → `MarkdownWorkerUnavailableError`) —
   untuk reproduksi visual jalur build lama / origin opaque.
+
+## 8. Cara pull & uji di komputer lokal (PR #17)
+
+```bash
+# 1. Pull branch/PR
+git fetch origin arena/01a0b9f3-opencode
+git checkout arena/01a0b9f3-opencode
+#   (atau: gh pr checkout 17)
+
+# 2. Install deps (ada devDep test baru: @happy-dom/global-registrator)
+bun install
+
+# 3. Test regresi (WAJIB lulus 7/7)
+cd packages/session-ui
+bun test --conditions=browser src/components/markdown-worker-unavailable.repro.test.tsx
+# suite penuh: bun test --conditions=browser   (90/90)
+cd ../app && bun test --conditions=solid --only-failures --preload ./happydom.ts ./src   # 727/727
+```
+
+**Uji live di desktop (dev — origin sehat, worker normal):**
+
+```bash
+cd packages/desktop && bun run dev
+```
+- Buka session, kirim prompt → teks balasan harus streaming normal **dengan
+  highlight** (baseline — memastikan fix tidak merusak jalur sehat).
+
+**Simulasikan worker mati (untuk melihat fix bekerja):**
+tambahkan SATU baris sementara di `getWorker()`
+(`packages/session-ui/src/components/markdown-worker.ts`, setelah baris
+`if (disabled) throw ...`):
+
+```ts
+  if (import.meta.env.DEV) throw new MarkdownWorkerUnavailableError("simulated: worker unavailable (local test)")
+```
+
+lalu `bun run dev` lagi, buka session, kirim prompt. **Yang harus terlihat:**
+- teks balasan tetap streaming dan lengkap — hanya tampil **plain** (tanpa
+  highlight code); TIDAK ada halaman error/session digantikan fallback;
+- console: satu baris `[markdown] worker unavailable, rendering plain-text
+  fallback …simulated: worker unavailable (local test)`;
+- setelah prompt selesai (completion), teks tetap utuh.
+
+Hapus baris sementara setelah uji. (Baris itu dev-only — `import.meta.env.DEV`
+— jadi tidak mungkin ikut ke build produksi, tetapi tetap hapus sebelum commit.)
+
+**Jika menguji packaged app sungguhan:** perhatikan console/desktop.log untuk
+`[markdown] worker unavailable, rendering plain-text fallback <error>` — pesan
+`<error>` menunjuk mode kegagalan sebenarnya (constructor vs onerror vs
+onmessageerror) dan menentukan langkah lanjutan (perbaikan aset vs CSP) sesuai
+§3/§6.
