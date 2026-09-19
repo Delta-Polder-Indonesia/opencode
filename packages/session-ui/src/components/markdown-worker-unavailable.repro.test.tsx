@@ -69,7 +69,7 @@ if (!(globalThis as any).__solidReactShim) {
     const flat = children.flat(Infinity).filter((c: any) => c !== undefined && c !== null && c !== false)
     if (type === (globalThis as any).React.Fragment) return flat
     if (typeof type === "function") {
-      const p: any = { ...(props ?? {}) }
+      const p: any = { ...props }
       if (flat.length === 1) p.children = flat[0]
       else if (flat.length > 1) p.children = flat
       return createComponent(type, p)
