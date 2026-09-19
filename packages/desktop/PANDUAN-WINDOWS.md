@@ -306,25 +306,30 @@ di-cache. Batas tunggu launcher kini 5 menit agar tidak menyerah lebih dulu.
 
 **Jendela terbuka tapi putih/kosong**
 
-Sudah diperbaiki sebagian: `git pull` lalu ulangi. Sebelumnya beberapa jalur
-kegagalan berakhir dengan dokumen kosong tanpa jejak apa pun. Sekarang jendela
-akan menampilkan panel berisi alasannya, dan error renderer juga ditulis ke log
-main process.
+Sudah diperbaiki dua putaran — `git pull` lalu ulangi:
 
-Kalau masih putih, jalankan dengan DevTools terbuka untuk melihat error aslinya:
+1. **Putaran pertama (mode dev)** — beberapa jalur kegagalan berakhir tanpa
+   jejak. Sekarang jendela menampilkan panel diagnostik, error renderer masuk
+   log main process, dan DevTools bisa dinyalakan dengan
+   `OPENCODE_DESKTOP_DEVTOOLS=1`.
+2. **Putaran kedua (aplikasi ter-install)** — di installer, renderer dimuat
+   dari berkas lokal. Entry renderer adalah ES module, dan module script
+   butuh CORS; `file://` ber-origin opaque sehingga script entry diblokir —
+   jendela putih tanpa pesan, padahal mode dev hijau (renderer dari server
+   Vite). Kini renderer dikemas dan dimuat lewat skema `oc://renderer`
+   (standard + secure), origin yang memang sudah diizinkan backend. Uji
+   regresinya: `bun test src` di `packages/desktop`.
+
+Kalau masih putih setelah `git pull` dan build ulang:
 
 ```powershell
 $env:OPENCODE_DESKTOP_DEVTOOLS="1"
-bun run dev
+bun run dev            # mode dev, atau jalankan OpenCode.exe ter-install dari terminal yang sama
 ```
 
-Lihat juga berkas log; jalurnya dicetak saat startup, biasanya:
-
-```
-%APPDATA%\OpenCode\desktop.log
-```
-
-Baris berawalan `[renderer]` adalah error dari dalam UI.
+DevTools akan terbuka; error merah di tab Console adalah penyebabnya. Kirim
+juga isi berkas log (`%APPDATA%\OpenCode\desktop.log`) — baris berawalan
+`[renderer]` adalah error dari dalam UI.
 
 **Aplikasi menggantung di layar loading**
 

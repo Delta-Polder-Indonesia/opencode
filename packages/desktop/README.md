@@ -41,6 +41,12 @@ Notes baked into `electron-builder.yml`:
 - The backend ships as `extraResources` (outside the asar) because packed files
   cannot be spawned.
 
+The packaged renderer is served from the `oc://renderer` scheme
+(`src/main/renderer-protocol.ts`), not `file://`: the Vite entry is an ES
+module and module scripts need a standard, secure origin — over `file://` the
+entry is blocked and the window stays blank. `oc://renderer` is also the origin
+the backend's CORS allowlist already accepts (`packages/server/src/cors.ts`).
+
 The pipeline was validated end-to-end on Linux with a stub Electron dist
 (no installer artifact, which only a Windows run can produce — see
 `catatan.md`, 2026-09-19).

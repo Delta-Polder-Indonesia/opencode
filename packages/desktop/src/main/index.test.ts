@@ -21,6 +21,9 @@ const dataDir = mkdtempSync(join(tmpdir(), "opencode-desktop-main-"))
 let readyResolve: () => void
 const ready = new Promise<void>((resolve) => (readyResolve = resolve))
 
+const registeredSchemes: Array<{ scheme: string; privileges: Record<string, unknown> }> = []
+const handledProtocols = new Map<string, (request: { url: string }) => unknown>()
+
 class FakeWebContents {
   listeners = new Map<string, Function>()
   session = { setPermissionRequestHandler: () => {} }
@@ -104,6 +107,15 @@ beforeAll(async () => {
       },
       { isSupported: () => false },
     ),
+    protocol: {
+      // Called at module scope, before app ready, as Electron requires.
+      registerSchemesAsPrivileged: (schemes: Array<{ scheme: string; privileges: Record<string, unknown> }>) => {
+        registeredSchemes.push(...schemes)
+      },
+      handle: (scheme: string, handler: (request: { url: string }) => unknown) => {
+        handledProtocols.set(scheme, handler)
+      },
+    },
     shell: {
       openExternal: async (url: string) => {
         externalOpens.push(url)
@@ -125,6 +137,18 @@ function call(channel: string, ...args: unknown[]) {
 }
 
 describe("main window security", () => {
+  test("serves the renderer from the privileged oc:// scheme, not file://", () => {
+    // Module scripts need a standard, secure origin; file:// would leave the
+    // packaged app blank. This is the regression test for that bug.
+    expect(registeredSchemes).toEqual([
+      {
+        scheme: "oc",
+        privileges: expect.objectContaining({ standard: true, secure: true, corsEnabled: true }),
+      },
+    ])
+    expect(handledProtocols.has("oc")).toBe(true)
+  })
+
   test("creates a window with the hardened web preferences", () => {
     expect(windows.length).toBe(1)
     const prefs = windows[0].options.webPreferences

@@ -853,7 +853,51 @@ adalah semua yang dikendalikan konfigurasi kita; elemen dari jaringan
 2. Verifikasi UI hidup dari Tahap 1B: folder picker, chat end-to-end, terminal,
    dan **tidak ada `opencode.exe` yatim** setelah keluar.
 
+#### 2026-09-19 — Installer jadi; layar putih di aplikasi ter-install ditemukan penyebabnya
+
+Laporan pengguna: `bun run package:win` **berhasil membuat installer** dan
+aplikasi ter-install — tetapi jendelanya putih kosong. Ini lari pertama
+artefak Tahap 1D, dan langsung menemukan cacat yang tidak mungkin terlihat di
+mode dev.
+
+**Akar masalah.** Renderer produksi adalah build Vite yang entry-nya
+`<script type="module" crossorigin>`. Module script butuh CORS; halaman
+`file://` ber-origin opaque ("null"), sehingga mesin browser memblokir script
+entry — jendela putih tanpa UI yang pernah hidup. Mode dev tidak pernah kena
+karena renderer-nya datang dari server HTTP Vite (`127.0.0.1:4455`). Jalur
+`file://` memang satu-satunya yang belum pernah diuji runtime. CSP `'self'`
+di atas `file://` juga tidak reliabel.
+
+**Perbaikan.** Renderer dikemas dan dimuat lewat skema kustom
+**`oc://renderer`** (`src/main/renderer-protocol.ts` baru):
+
+- Skema didaftarkan `standard + secure + supportFetchAPI + corsEnabled +
+stream` sebelum app ready; `protocol.handle` menyajikan berkas dari
+  `dist/renderer` (di dalam asar saat ter-packaged) dengan content-type yang
+  benar dan penolakan traversal. Parser URL WHATWG menormalkan `..` maupun
+  `%2e%2e`, dan pemeriksaan `relative()` mengunci hasil di dalam direktori
+  renderer — keduanya terkunci tes.
+- **`oc://renderer` bukan tebakan**: itu origin yang sudah diizinkan
+  allowlist CORS backend (`packages/server/src/cors.ts` mendaftar
+  `oc://renderer` untuk desktop renderer) — backend tidak diubah sama sekali,
+  dan origin-nya identik dengan yang dipakai desktop upstream.
+- Mode dev tetap lewat server Vite; `bun run start` dan aplikasi ter-install
+  kini sama-sama lewat `oc://`.
+- `OPENCODE_DESKTOP_DEVTOOLS=1` kini juga dihormati di aplikasi ter-install,
+  supaya layar putih berikutnya bisa diinspeksi langsung di tempat.
+
+**Verifikasi:** `bun test src` **109 pass / 0 fail** (16 tes baru: pemetaan
+URL→berkas, penolakan skema/host asing, content-type, dan regresi "renderer
+wajib lewat oc:// privileged, bukan file://" pada smoke main process);
+typecheck bersih; bundel tetap mandiri (`electron` + builtin Node); smoke
+packaging offline memastikan `index.cjs` di dalam asar memuat perbaikan.
+**Belum terverifikasi runtime di Windows** — pengguna perlu build ulang
+installer dari branch ini (`git pull` dulu, lalu `bun run package:win` atau
+`bun run script/package.ts --skip-backend`).
+
 ---
+
+## Arsip catatan teknis sebelumnya
 
 Bagian di bawah dipertahankan sebagai riwayat. Status dan hasil pengujian di
 arsip merujuk sesi/commit yang disebutkan, bukan otomatis hasil pengujian rencana
