@@ -947,6 +947,40 @@ bisa ditemukan di lipatan thinking yang bisa dibuka.
 
 ---
 
+#### 2026-09-19 — Error `binding.startupData` null: race bootstrap sandbox Electron, bukan error aplikasi
+
+Pengguna melaporkan error di DevTools: `Electron sandboxed_renderer.bundle.js
+script failed to run — TypeError: Cannot destructure property 'preloadScripts'
+of 'binding.startupData' as it is null.`
+
+**Identifikasi.** Error ini terjadi di bundle bootstrap sandbox Electron sendiri,
+sebelum preload aplikasi jalan. Kasus serupa di proyek lain (Zenium PR #81,
+yoma PR #5, isu claude-code #86577) menunjukkan polanya: dokumen kosong awal
+kehilangan race melawan navigasi pertama — sandbox init dieksekusi di konteks
+skema buangan tanpa startupData, sementara halaman sebenarnya dan preload-nya
+tetap bekerja (yoma bahkan menyaringnya sebagai noise di e2e-nya). Zenium
+memprodusinya dengan double-load; kita hanya memuat sekali per window, jadi
+kalau muncul, itu flake upstream — bukan cacat alur kita.
+
+**Tindakan (kecil, sengaja):** mirror console renderer di main process kini
+mengenali pesan `binding.startupData`/`sandboxed_renderer.bundle.js`, mencatatnya
+sekali di level info dengan penjelasan, dan tidak lagi menuliskannya sebagai
+error — supaya pembacaan `desktop.log` saat triase tidak salah menyimpulkan.
+Error renderer lain tetap dicerminkan apa adanya (terkunci 2 tes regresi;
+desktop 111 pass / 0 fail).
+
+**Dipertimbangkan dan ditolak untuk sekarang:** menaikkan Electron ke 44.4.3.
+Rilis itu baru ~30 jam; kebijakan supply-chain repo (`minimumReleaseAge` 3 hari
+di `bunfig.toml`) memblokirnya — dan tanpa catatan pembaruan yang menyebut
+perbaikan race ini, menunggu kebijakan itu adalah keputusan yang benar.
+
+**Pertanyaan penentu untuk pengguna:** apakah UI tetap tampil saat error itu
+muncul? Kalau ya, error tersebut tidak berbahaya dan investigasi jawaban yang
+tak terlihat berlanjut dengan bukti `desktop.log` + nama model. Kalau UI tidak
+tampil, itu kasus berbeda — kirim `desktop.log`.
+
+---
+
 ## Arsip catatan teknis sebelumnya
 
 Bagian di bawah dipertahankan sebagai riwayat. Status dan hasil pengujian di

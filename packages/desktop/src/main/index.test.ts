@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, mock, test } from "bun:test"
-import { mkdtempSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { IPC } from "../shared/ipc"
@@ -135,6 +135,33 @@ function call(channel: string, ...args: unknown[]) {
   const window = FakeBrowserWindow.instances[0]
   return handler({ sender: window.webContents, senderFrame: { url: "http://127.0.0.1:4455/" } }, ...args)
 }
+
+describe("renderer console mirroring", () => {
+  const mirror = () => FakeBrowserWindow.instances[0].webContents.listeners.get("console-message")!
+  const logFile = join(dataDir, "logs", "desktop.log")
+  const readLog = () => (existsSync(logFile) ? readFileSync(logFile, "utf8") : "")
+
+  test("annotates the Electron sandbox bootstrap race instead of failing loudly", () => {
+    const event = {
+      level: "error" as const,
+      message: "TypeError: Cannot destructure property 'preloadScripts' of 'binding.startupData' as it is null.",
+      sourceId: "node:electron/js2c/sandbox_bundle",
+      lineNumber: 2,
+    }
+    mirror()(event)
+    mirror()(event)
+    const log = readLog()
+    const lines = log.split("\n").filter((line) => line.includes("binding.startupData"))
+    expect(lines.length).toBe(1)
+    expect(lines[0]).toContain("[info]")
+    expect(lines[0]).toContain("sandbox bootstrap race")
+  })
+
+  test("still mirrors real renderer errors verbatim", () => {
+    mirror()({ level: "error", message: "boom in the page", sourceId: "app.js", lineNumber: 7 })
+    expect(readLog()).toContain("[renderer] boom in the page (app.js:7)")
+  })
+})
 
 describe("main window security", () => {
   test("serves the renderer from the privileged oc:// scheme, not file://", () => {

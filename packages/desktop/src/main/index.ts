@@ -78,6 +78,8 @@ type ConsoleMessageEvent = {
 
 /** Pre-36 Electron reported console levels as 0=verbose 1=info 2=warning 3=error. */
 const LEGACY_CONSOLE_LEVELS = ["debug", "info", "warning", "error"] as const
+/** Logged once per process: the sandbox bootstrap race below is Electron-internal. */
+let SANDBOX_RACE_LOGGED = false
 
 const storage = new DesktopStorage(join(app.getPath("userData"), "storage"))
 const windowIDs = new WeakMap<BrowserWindow, string>()
@@ -288,6 +290,19 @@ async function createWindow() {
     const source = event?.sourceId ?? (typeof rest[3] === "string" ? rest[3] : "")
     const line = event?.lineNumber ?? (typeof rest[2] === "number" ? rest[2] : 0)
     const where = source ? ` (${source}:${line})` : ""
+    // Electron's sandbox bootstrap races the first navigation; when it loses,
+    // it logs this startupData error from a throwaway script context while the
+    // real page and its preload keep working. Log it once at info with the
+    // explanation so a triage read does not mistake it for an app failure.
+    if (message.includes("binding.startupData") || message.includes("sandboxed_renderer.bundle.js")) {
+      if (!SANDBOX_RACE_LOGGED) {
+        SANDBOX_RACE_LOGGED = true
+        log.info(
+          `[renderer] ${message}${where} -- known Electron sandbox bootstrap race; harmless when the UI still loads`,
+        )
+      }
+      return
+    }
     // `log.write` redacts, so credentials in a renderer log are not leaked here.
     log.write(level === "error" ? "error" : "warn", `[renderer] ${message}${where}`)
   })
