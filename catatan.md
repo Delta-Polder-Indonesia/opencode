@@ -1527,3 +1527,61 @@ baru itu bug Windows-specific di source — minta ulang log server (error akan p
 posisi terbaru; build.ts pakai `minify:false` untuk main/preload, backend dari
 packages/opencode/script/build.ts) dan telusuri `resolve`+`i.name` di
 packages/core/src/shell.ts (Windows-only branch) sebagai kandidat pertama.
+
+## Diagnosis "teks balasan AI tidak pernah tampil" (2026-09-19): WORKER MARKDOWN TIDAK TERSEDIA → `Markdown` MATI
+
+**Laporan lengkap: `DIAGNOSIS-markdown-worker.md`** (a/b/c + bukti + opsi fix).
+**Repro runtime: `packages/session-ui/src/components/markdown-worker-unavailable.repro.test.tsx`** —
+jalankan `cd packages/session-ui && bun test --conditions=browser src/components/markdown-worker-unavailable.repro.test.tsx` →
+**7/7 lulus** (suite penuh 90/90).
+
+**Akar (bukti kode + runtime):** `pendingBlocks()` BUKAN titik kehilangan.
+Saat worker tidak tersedia, `getWorker()` (markdown-worker.ts:116-124) throw
+sinkron (konstruktor gagal ATAU flag `disabled` dari `fail()` L200-215 —
+persisten di level modul) → loader resource `projection` (markdown.tsx:380-389;
+`projectMarkdown` markdown-worker.ts:68) error → getter `resource.latest`
+Solid 1.9.10 **melempar** error resource → bacaan `projection.latest` di
+markdown.tsx:393 (`currentProjection`), :406 (source `html`, mati saat mount),
+:497-499 (effect, mati di delta berikutnya saat mid-stream) re-throw →
+`SessionRouteErrorBoundary` (packages/app/src/pages/session.tsx:168) mengganti
+SELURUH konten session dengan ErrorPage/fallback → teks tidak pernah tampil.
+Asimetri pembuktian: jalur non-streaming TIDAK memakai `projection` (pakai
+`completedProjection` + catch → fallback teks escaped) → tool output/riwayat
+tetap terlihat (test CONTROL).
+
+**(a) Di mana:** web (http same-origin, tanpa CSP di packages/app) = tidak
+terjadi karena origin; desktop dev (`http://127.0.0.1:4455`) = tidak terjadi;
+**desktop packaged build LAMA (`file://` + `base:"./"`) = terjadi 100%**
+(origin "null" → `new Worker` throw SecurityError). **Kode SAAT INI sudah
+menghindari file://** — renderer disajikan via skema `oc://renderer`
+(standard+secure+corsEnabled; renderer-protocol.ts, main/index.ts:69) sehingga
+worker same-origin dan CSP `'self'` membolehkannya. Sisa risiko packaged
+sekarang: aset worker hilang dari asar (error event worker → `fail()` → mati di
+delta pertama) atau error top-level modul worker. Varian runtime (onerror,
+mis. WASM shiki) bisa menyerang SEMUA lingkungan: teks membeku lalu boundary
+aktif.
+
+**(b) Console:** bisa HAMPIR BERSIH — error ctor di-catch di markdown-worker.ts:121,
+`onerror`→`fail()` sunyi, `MarkdownWorkerUnavailableError` ditangkap boundary
+(bukan Uncaught). Sinyal andal: Sentry `MarkdownWorkerUnavailableError`
+(error.tsx:315) + UI ErrorPage; untuk build lama/CSP: `Failed to construct
+'Worker': Script at 'file:///…' cannot be loaded from an origin of 'null'` /
+`Refused to create a worker … script-src`.Snippet log sementara ada di laporan
+§3. CSP diperbaiki HANYA jika console benar-benar menampilkan violation CSP.
+
+**(c) Titik kehilangan teks:** throw awal `getWorker()` markdown-worker.ts:116-124
+→ re-throw di pembacaan `projection.latest` markdown.tsx:393/406/497-499
+→ UI mati di SessionRouteErrorBoundary session.tsx:168. Data di store SEHAT
+(streaming-answer.test.ts + test BASELINE).
+
+**Opsi fix (tahap berikutnya, BELUM diimplementasikan):** (1, disarankan)
+fallback sinkron di jalur streaming saat resource error — pakai
+`pendingProjection(text)` (teks escaped seperti jalur statis); (2) recovery
+worker (reset `disabled`) untuk kegagalan transien; (3) perbaikan aset worker
+di packaged hanya jika console menunjuk kegagalan load; (4) CSP hanya jika
+terbukti violation. Test regresinya sudah ada (file repro; opsi 1 mengubah
+klaim REPRO 3-6 dari "melempar" menjadi "teks tetap tampil").
+
+**Probe:** `diagnosis-probe/markdown-worker-file-probe.html` (+ `.worker.js`) —
+buka dari disk di Chrome untuk melihat SecurityError `file://` verbatim +
+kaskade modul (CSP meta = persis packages/desktop/index.html).
