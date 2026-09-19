@@ -17,6 +17,7 @@ const handlers = new Map<string, Handler>()
 const windows: Array<{ options: Record<string, any>; webContents: any }> = []
 const externalOpens: string[] = []
 const dataDir = mkdtempSync(join(tmpdir(), "opencode-desktop-main-"))
+const shownNotifications: Array<{ title: string; body: string }> = []
 
 let readyResolve: () => void
 const ready = new Promise<void>((resolve) => (readyResolve = resolve))
@@ -45,9 +46,13 @@ class FakeBrowserWindow {
   static instances: FakeBrowserWindow[] = []
   webContents = new FakeWebContents()
   destroyed = false
+  focused = false
   constructor(public options: Record<string, any>) {
     FakeBrowserWindow.instances.push(this)
     windows.push({ options, webContents: this.webContents })
+  }
+  isFocused() {
+    return this.focused
   }
   static fromWebContents(contents: unknown) {
     return FakeBrowserWindow.instances.find((window) => window.webContents === contents)
@@ -102,10 +107,15 @@ beforeAll(async () => {
     nativeTheme: { shouldUseDarkColors: false },
     Notification: Object.assign(
       class {
+        options: { title: string; body: string }
+        constructor(options: { title: string; body?: string }) {
+          this.options = { title: options.title, body: options.body ?? "" }
+          shownNotifications.push(this.options)
+        }
         on() {}
         show() {}
       },
-      { isSupported: () => false },
+      { isSupported: () => true },
     ),
     protocol: {
       // Called at module scope, before app ready, as Electron requires.
@@ -248,6 +258,24 @@ describe("main ipc handlers", () => {
     expect(call(IPC.defaultServerGet)).toBe("https://team.example.com/")
     expect(call(IPC.defaultServerSet, null)).toBe(true)
     expect(call(IPC.defaultServerGet)).toBeNull()
+  })
+
+  test("suppresses notifications while the window is focused", () => {
+    const before = shownNotifications.length
+    FakeBrowserWindow.instances[0].focused = true
+    expect(call(IPC.notify, { title: "Respons siap", description: "New session - 2026" })).toBe(false)
+    expect(shownNotifications.length).toBe(before)
+  })
+
+  test("shows notifications only while the window is blurred", () => {
+    const before = shownNotifications.length
+    FakeBrowserWindow.instances[0].focused = false
+    expect(call(IPC.notify, { title: "Respons siap", description: "New session - 2026" })).toBe(true)
+    expect(shownNotifications.length).toBe(before + 1)
+    expect(shownNotifications[shownNotifications.length - 1]).toEqual({
+      title: "Respons siap",
+      body: "New session - 2026",
+    })
   })
 
   test("validates storage writes", () => {

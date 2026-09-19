@@ -1440,3 +1440,33 @@ memetakan body prompt, (3) loop v2 memakai model sesi UI.
 - SSE heartbeat/connected dari handler global memang tanpa directory → bucket "global" (diabaikan reducer).
 - Heartbeat handler global: 10 detik; /api/event (v2): 15 detik + `: heartbeat` comment.
 - `StreamEvent` SDK: `{data,event?,id?,retry?}` — yang di-yield ke consumer adalah `data`-nya saja.
+
+## "Respons siap - New session - <tanggal>" muncul tiap balasan (2026-09-19)
+
+**Dekode gejala**: teks yang dilihat user = notifikasi OS `responseReady`
+(`notification.session.responseReady.title` = "Respons siap") dengan deskripsi
+`session.title` yang masih default `New session - <ISO>` (packages/app/src/context/
+notification.tsx `handleSessionIdle`). BUKAN sesi baru yang dibuat — daftar sesi
+server stabil (diverifikasi di sandbox; tidak ada sesi anak per balasan).
+
+**Perbandingan dengan upstream (anomalyco/opencode, branch dev)**:
+- `handleSessionIdle`/`handleSessionError` di packages/app: IDENTIK dengan upstream
+  (upstream juga memanggil platform.notify tanpa gate viewed).
+- Default settings.notifications.agent = true di keduanya.
+- Upstream TIDAK punya notifikasi desktop; sistem notifikasi mereka ada di TUI
+  (packages/tui/src/feature-plugins/system/notifications.ts + attention.ts) dengan
+  pola kunci: `notification: isSubagent ? false : { when: "blurred" }` — toast OS
+  HANYA saat jendela TIDAK fokus; suara `when: "always"`.
+- `ensureTitle` (packages/opencode/src/session/prompt.ts) dan `getSmallModel`
+  (packages/opencode/src/provider/provider.ts) fork IDENTIK dengan upstream —
+  kegagalan ganti judul di Windows berasal dari perilaku provider router gratis
+  user (title call = llm.stream kecil `system:[]`, `tools:{}`, `small:true`,
+  `Effect.ignore` + fork → kegagalan ditelan, judul tetap default).
+
+**Fix (selaras upstream)**: packages/desktop/src/main/index.ts handler IPC.notify
+kini memeriksa `window.isFocused()` → return false bila fokus (toast hanya saat
+blurred). +2 tes (focused suppress / blurred show). Suite desktop 113/0.
+
+**Menggantung**: kenapa title generation gagal dengan model router user — butuh
+desktop.log (cari "failed to generate title"). Judul default akan tetap muncul di
+notifikasi saat window blurred sampai title berhasil dibuat sekali.

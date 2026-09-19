@@ -424,9 +424,14 @@ function registerIpc() {
   })
 
   ipcMain.handle(IPC.notify, (event, raw: unknown) => {
-    if (!senderWindow(event)) return false
+    const window = senderWindow(event)
+    if (!window) return false
     const request = parseNotifyRequest(raw)
     if (!request || !Notification.isSupported()) return false
+    // Upstream only demands attention while the window is blurred (see the TUI
+    // attention plugin's `notification: { when: "blurred" }`): never toast over
+    // an active session the user is looking at.
+    if (window.isFocused()) return false
     const notification = new Notification({ title: request.title, body: request.description ?? "" })
     notification.on("click", () => {
       const window = BrowserWindow.getAllWindows()[0]
