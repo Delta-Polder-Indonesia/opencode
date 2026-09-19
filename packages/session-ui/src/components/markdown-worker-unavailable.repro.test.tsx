@@ -115,9 +115,26 @@ mock.module("dompurify", () => ({
 }))
 
 import { project, type Projection } from "./markdown-stream"
-const { render, ErrorBoundary } = await import("solid-js/web")
+const { render, ErrorBoundary, isServer } = await import("solid-js/web")
 const { createSignal } = await import("solid-js")
-const { Markdown } = await import("./markdown")
+
+// Without `--conditions=browser` bun resolves solid-js/web to the SERVER build,
+// whose client-only APIs throw ("Client-only API called on the server side") —
+// and importing ./markdown reaches them at module scope (through the UI/kobalte
+// chain). Skip the scenarios there with instructions instead of failing the
+// package's default `bun test src` run; the package's `test` script and this
+// file's documented command pass `--conditions=browser`.
+let Markdown: any
+if (isServer)
+  console.warn(
+    [
+      "[markdown-worker-unavailable] solid-js/web resolved to the SERVER build — skipping.",
+      "Run this file with the client (browser) condition to execute the scenarios:",
+      "  bun test --conditions=browser src/components/markdown-worker-unavailable.repro.test.tsx",
+    ].join("\n"),
+  )
+else Markdown = (await import("./markdown")).Markdown
+const scenario = isServer ? test.skip : test
 
 type ProtocolMessage = {
   type: string
@@ -239,7 +256,7 @@ const CSP_FILE_WORKER_ERROR =
  * 1. Baseline: healthy worker — behavior the fix MUST preserve.
  * ------------------------------------------------------------------ */
 
-test("BASELINE: streamed text is visible from the first delta and settles to parsed HTML", async () => {
+scenario("BASELINE: streamed text is visible from the first delta and settles to parsed HTML", async () => {
   const [text, setText] = createSignal("")
   const host = document.createElement("div")
   document.body.appendChild(host)
@@ -262,7 +279,7 @@ test("BASELINE: streamed text is visible from the first delta and settles to par
   expect(host.innerHTML).not.toBe("")
 })
 
-test("BASELINE: completion (streaming -> false) keeps the full text", async () => {
+scenario("BASELINE: completion (streaming -> false) keeps the full text", async () => {
   const [text, setText] = createSignal("Awal jawaban")
   const [streaming, setStreaming] = createSignal(true)
   const host = document.createElement("div")
@@ -288,7 +305,7 @@ test("BASELINE: completion (streaming -> false) keeps the full text", async () =
  *    must keep rendering as plain text, not die.
  * ------------------------------------------------------------------ */
 
-test("REGRESSION: worker crash mid-stream -> text keeps rendering (plain) during streaming and after completion", async () => {
+scenario("REGRESSION: worker crash mid-stream -> text keeps rendering (plain) during streaming and after completion", async () => {
   const [text, setText] = createSignal("Halo, ")
   const [streaming, setStreaming] = createSignal(true)
   const host = document.createElement("div")
@@ -329,7 +346,7 @@ test("REGRESSION: worker crash mid-stream -> text keeps rendering (plain) during
   expect((host.textContent ?? "").trim().length).toBeGreaterThan(0)
 })
 
-test("REGRESSION: after a crash, mounting another streaming part still renders the text (plain)", async () => {
+scenario("REGRESSION: after a crash, mounting another streaming part still renders the text (plain)", async () => {
   const second = document.createElement("div")
   document.body.appendChild(second)
   let error: unknown
@@ -347,7 +364,7 @@ test("REGRESSION: after a crash, mounting another streaming part still renders t
  *    packaged-desktop origin/CSP situation.
  * ------------------------------------------------------------------ */
 
-test("REGRESSION: worker constructor failure -> fresh streaming mount still renders the text (plain)", async () => {
+scenario("REGRESSION: worker constructor failure -> fresh streaming mount still renders the text (plain)", async () => {
   const real = globalThis.Worker
   // Deterministically put the module-level worker state into the dead
   // condition the packaged app faces on first mount: if a live worker is
@@ -384,7 +401,7 @@ test("REGRESSION: worker constructor failure -> fresh streaming mount still rend
   }
 })
 
-test("REGRESSION: with an ErrorBoundary (like the session route), the content stays — no fallback needed", async () => {
+scenario("REGRESSION: with an ErrorBoundary (like the session route), the content stays — no fallback needed", async () => {
   const host = document.createElement("div")
   document.body.appendChild(host)
 
@@ -432,7 +449,7 @@ test("REGRESSION: with an ErrorBoundary (like the session route), the content st
  *    the asymmetry that proves where the text is lost.
  * ------------------------------------------------------------------ */
 
-test("CONTROL: non-streaming Markdown still renders (escaped plain text) when the worker is unavailable", async () => {
+scenario("CONTROL: non-streaming Markdown still renders (escaped plain text) when the worker is unavailable", async () => {
   const host = document.createElement("div")
   document.body.appendChild(host)
 
